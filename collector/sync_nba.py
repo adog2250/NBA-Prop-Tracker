@@ -9,11 +9,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 from nba_api.stats.static import teams as nba_teams
 
-
-BASE = (
-    "https://site.api.espn.com/apis/site/v2/"
-    "sports/basketball/nba"
-)
+BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 
 TEAM_ALIASES = {
     "GS": "GSW",
@@ -26,26 +22,33 @@ TEAM_ALIASES = {
     "BRK": "BKN",
 }
 
+DEBUG_GAME = "401909277"
+
 
 def fetch_json(url):
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "NBAPropTracker/1.0",
+            "User-Agent": "Mozilla/5.0 NBAPropTracker/1.0",
             "Accept": "application/json",
         },
     )
-
-    with urllib.request.urlopen(
-        request,
-        timeout=25,
-    ) as response:
+    with urllib.request.urlopen(request, timeout=25) as response:
         return json.load(response)
 
 
 def normalize_team(value):
-    value = str(value or "").strip().upper()
-    return TEAM_ALIASES.get(value, value)
+    key = str(value or "").strip().upper()
+    return TEAM_ALIASES.get(key, key)
+
+
+def team_maps(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, abbreviation FROM teams")
+        return {
+            abbr: team_id
+            for team_id, abbr in cur.fetchall()
+        }
 
 
 def sync_teams(conn):
@@ -79,52 +82,29 @@ def sync_teams(conn):
     return len(records)
 
 
-def team_maps(conn):
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, abbreviation FROM teams"
-        )
-
-        return {
-            abbr: team_id
-            for team_id, abbr in cur.fetchall()
-        }
-
-
 def score(entry):
     value = entry.get("score")
-
-    if value in (None, ""):
-        return None
-
-    return int(value)
+    return int(value) if value not in (None, "") else None
 
 
 def sync_games(conn, day):
-    url = (
-        f"{BASE}/scoreboard"
-        f"?dates={day:%Y%m%d}&limit=100"
+    data = fetch_json(
+        f"{BASE}/scoreboard?dates={day:%Y%m%d}&limit=100"
     )
 
-    data = fetch_json(url)
     teams = team_maps(conn)
-
     processed = 0
     finals = []
 
     with conn.cursor() as cur:
         for event in data.get("events", []):
-            competitions = event.get(
-                "competitions"
-            ) or [{}]
-
-            competition = competitions[0]
+            competition = (
+                event.get("competitions") or [{}]
+            )[0]
 
             entries = {
                 entry.get("homeAway"): entry
-                for entry in competition.get(
-                    "competitors", []
-                )
+                for entry in competition.get("competitors", [])
             }
 
             home = entries.get("home")
@@ -134,15 +114,11 @@ def sync_games(conn, day):
                 continue
 
             home_abbr = normalize_team(
-                home.get("team", {}).get(
-                    "abbreviation"
-                )
+                (home.get("team") or {}).get("abbreviation")
             )
 
             away_abbr = normalize_team(
-                away.get("team", {}).get(
-                    "abbreviation"
-                )
+                (away.get("team") or {}).get("abbreviation")
             )
 
             home_id = teams.get(home_abbr)
@@ -150,29 +126,21 @@ def sync_games(conn, day):
 
             if home_id is None or away_id is None:
                 print(
-                    f"SKIP unsupported game "
-                    f"{event.get('id')}: "
+                    f"SKIP unsupported game {event.get('id')}: "
                     f"{away_abbr} @ {home_abbr}",
                     flush=True,
                 )
                 continue
 
             status_info = (
-                event.get("status", {})
-                .get("type", {})
+                (event.get("status") or {}).get("type") or {}
             )
 
-            complete = bool(
-                status_info.get("completed")
-            )
-
-            state = status_info.get(
-                "state", "pre"
-            )
+            complete = bool(status_info.get("completed"))
 
             if complete:
                 status = "final"
-            elif state == "in":
+            elif status_info.get("state") == "in":
                 status = "live"
             else:
                 status = "scheduled"
@@ -181,14 +149,11 @@ def sync_games(conn, day):
 
             if not event_date:
                 raise RuntimeError(
-                    f"Missing date for game "
-                    f"{event.get('id')}"
+                    f"Missing date for game {event.get('id')}"
                 )
 
             local_date = datetime.fromisoformat(
-                event_date.replace(
-                    "Z", "+00:00"
-                )
+                event_date.replace("Z", "+00:00")
             ).astimezone(
                 ZoneInfo("America/New_York")
             ).date()
@@ -205,16 +170,10 @@ def sync_games(conn, day):
             cur.execute(
                 """
                 INSERT INTO games (
-                    id,
-                    game_date,
-                    season,
-                    home_team_id,
-                    away_team_id,
-                    home_score,
-                    away_score,
-                    status,
-                    stats_verified,
-                    updated_at
+                    id, game_date, season,
+                    home_team_id, away_team_id,
+                    home_score, away_score,
+                    status, stats_verified, updated_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s,
@@ -254,16 +213,14 @@ def number(value):
     if value is None:
         return None
 
-    value = str(value).strip()
-
-    if value in (
+    if str(value).strip().upper() in (
         "", "--", "-", "DNP", "N/A"
     ):
         return None
 
     try:
         return int(float(value))
-    except (ValueError, TypeError):
+    except (TypeError, ValueError):
         return None
 
 
@@ -271,24 +228,19 @@ def minutes_value(value):
     if value is None:
         return None
 
-    value = str(value).strip()
+    try:
+        value = str(value).strip()
 
-    if ":" in value:
-        try:
-            mins, secs = value.split(
-                ":", 1
-            )
-
+        if ":" in value:
+            mins, secs = value.split(":", 1)
             return round(
                 int(mins) + int(secs) / 60,
                 3,
             )
-        except (ValueError, TypeError):
-            return None
 
-    try:
         return float(value)
-    except (ValueError, TypeError):
+
+    except (TypeError, ValueError):
         return None
 
 
@@ -311,27 +263,25 @@ def pick(stats, *names):
 
 
 def sync_boxscore(conn, game_id):
-    url = (
+    summary = fetch_json(
         f"{BASE}/summary?event={game_id}"
     )
 
-    summary = fetch_json(url)
-
     sections = (
-        (summary.get("boxscore") or {})
-        .get("players") or []
+        (summary.get("boxscore") or {}).get("players") or []
     )
 
     if not sections:
         print(
-            f"SKIP game {game_id}: "
-            f"no player box score yet",
+            f"SKIP game {game_id}: no player box score yet",
             flush=True,
         )
         return 0
 
     teams = team_maps(conn)
     rows = []
+    debug_count = 0
+    skipped_reasons = {}
 
     for section in sections:
         team = section.get("team") or {}
@@ -344,25 +294,19 @@ def sync_boxscore(conn, game_id):
 
         if team_id is None:
             raise RuntimeError(
-                f"Unknown box score team "
-                f"{abbr} for game {game_id}"
+                f"Unknown box score team {abbr} "
+                f"for game {game_id}"
             )
 
-        for group in (
-            section.get("statistics") or []
-        ):
+        for group in section.get("statistics") or []:
             labels = (
                 group.get("labels")
                 or group.get("names")
                 or []
             )
 
-            for item in (
-                group.get("athletes") or []
-            ):
-                athlete = (
-                    item.get("athlete") or {}
-                )
+            for item in group.get("athletes") or []:
+                athlete = item.get("athlete") or {}
 
                 athlete_id = athlete.get("id")
 
@@ -371,77 +315,77 @@ def sync_boxscore(conn, game_id):
                     or athlete.get("fullName")
                 )
 
+                values = item.get("stats") or []
+
+                # DEBUG: Show up to 8 player samples.
+                if (
+                    game_id == DEBUG_GAME
+                    and debug_count < 8
+                ):
+                    print(
+                        "DEBUG BOX SCORE:",
+                        "labels=", labels,
+                        "player=", full_name,
+                        "stats=", values,
+                        "didNotPlay=", item.get("didNotPlay"),
+                        "reason=", item.get("reason"),
+                        flush=True,
+                    )
+                    debug_count += 1
+
                 if not athlete_id or not full_name:
+                    key = "missing athlete identity"
+                    skipped_reasons[key] = (
+                        skipped_reasons.get(key, 0) + 1
+                    )
                     continue
 
-                # Do not create fake zero
-                # stats for players who did not play.
                 if (
                     item.get("didNotPlay")
                     or item.get("reason")
                 ):
+                    key = "DNP"
+                    skipped_reasons[key] = (
+                        skipped_reasons.get(key, 0) + 1
+                    )
                     continue
 
-                values = item.get("stats") or []
-                if game_id == "401909277":
-    print(
-        "DEBUG BOX SCORE:",
-        "labels=", labels,
-        "player=", full_name,
-        "stats=", values,
-        "didNotPlay=", item.get("didNotPlay"),
-        "reason=", item.get("reason"),
-        flush=True,
-    )
-
                 if not values or not labels:
+                    key = "missing labels or values"
+                    skipped_reasons[key] = (
+                        skipped_reasons.get(key, 0) + 1
+                    )
                     continue
 
                 stats = {
                     label_key(key): value
-                    for key, value in zip(
-                        labels, values
-                    )
+                    for key, value in zip(labels, values)
                 }
 
                 pts = number(
-                    pick(
-                        stats,
-                        "PTS",
-                        "POINTS",
-                    )
+                    pick(stats, "PTS", "POINTS")
                 )
 
                 reb = number(
-                    pick(
-                        stats,
-                        "REB",
-                        "REBOUNDS",
-                    )
+                    pick(stats, "REB", "REBOUNDS")
                 )
 
                 ast = number(
-                    pick(
-                        stats,
-                        "AST",
-                        "ASSISTS",
-                    )
+                    pick(stats, "AST", "ASSISTS")
                 )
 
                 mins = minutes_value(
-                    pick(
-                        stats,
-                        "MIN",
-                        "MINUTES",
-                    )
+                    pick(stats, "MIN", "MINUTES")
                 )
 
-                if (
-                    pts is None
-                    or reb is None
-                    or ast is None
-                    or mins is None
+                if any(
+                    value is None
+                    for value in (pts, reb, ast, mins)
                 ):
+                    key = "missing required stat fields"
+                    skipped_reasons[key] = (
+                        skipped_reasons.get(key, 0) + 1
+                    )
                     continue
 
                 threes = pick(
@@ -456,18 +400,14 @@ def sync_boxscore(conn, game_id):
                     threes is not None
                     and "-" in str(threes)
                 ):
-                    threes = str(
-                        threes
-                    ).split("-", 1)[0]
-
-                # Negative IDs distinguish ESPN
-                # player IDs from NBA player IDs.
-                player_id = -int(athlete_id)
+                    threes = str(threes).split(
+                        "-", 1
+                    )[0]
 
                 rows.append(
                     (
                         game_id,
-                        player_id,
+                        -int(athlete_id),
                         team_id,
                         full_name,
                         mins,
@@ -476,18 +416,10 @@ def sync_boxscore(conn, game_id):
                         ast,
                         number(threes),
                         number(
-                            pick(
-                                stats,
-                                "STL",
-                                "STEALS",
-                            )
+                            pick(stats, "STL", "STEALS")
                         ),
                         number(
-                            pick(
-                                stats,
-                                "BLK",
-                                "BLOCKS",
-                            )
+                            pick(stats, "BLK", "BLOCKS")
                         ),
                         number(
                             pick(
@@ -500,6 +432,13 @@ def sync_boxscore(conn, game_id):
                     )
                 )
 
+    if skipped_reasons:
+        print(
+            f"BOX SCORE {game_id} skipped: "
+            f"{skipped_reasons}",
+            flush=True,
+        )
+
     if not rows:
         print(
             f"SKIP game {game_id}: "
@@ -511,65 +450,38 @@ def sync_boxscore(conn, game_id):
     with conn.cursor() as cur:
         for row in rows:
             (
-                gid,
-                pid,
-                tid,
-                name,
-                mins,
-                pts,
-                reb,
-                ast,
-                threes,
-                stl,
-                blk,
-                tov,
+                gid, pid, tid, name,
+                mins, pts, reb, ast,
+                threes, stl, blk, tov,
             ) = row
 
             cur.execute(
                 """
                 INSERT INTO players (
-                    id,
-                    full_name,
-                    current_team_id,
-                    is_active,
-                    updated_at
+                    id, full_name, current_team_id,
+                    is_active, updated_at
                 )
-                VALUES (
-                    %s, %s, %s, TRUE, NOW()
-                )
+                VALUES (%s, %s, %s, TRUE, NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     full_name = EXCLUDED.full_name,
                     updated_at = NOW()
                 """,
-                (
-                    pid,
-                    name,
-                    tid,
-                ),
+                (pid, name, tid),
             )
 
             cur.execute(
                 """
                 INSERT INTO player_game_stats (
-                    game_id,
-                    player_id,
-                    team_id,
-                    minutes,
-                    points,
-                    rebounds,
-                    assists,
-                    threes_made,
-                    steals,
-                    blocks,
-                    turnovers
+                    game_id, player_id, team_id,
+                    minutes, points, rebounds,
+                    assists, threes_made,
+                    steals, blocks, turnovers
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s
                 )
-                ON CONFLICT (
-                    game_id, player_id
-                )
+                ON CONFLICT (game_id, player_id)
                 DO UPDATE SET
                     team_id = EXCLUDED.team_id,
                     minutes = EXCLUDED.minutes,
@@ -582,44 +494,14 @@ def sync_boxscore(conn, game_id):
                     turnovers = EXCLUDED.turnovers
                 """,
                 (
-                    gid,
-                    pid,
-                    tid,
-                    mins,
-                    pts,
-                    reb,
-                    ast,
-                    threes,
-                    stl,
-                    blk,
-                    tov,
+                    gid, pid, tid, mins, pts,
+                    reb, ast, threes, stl,
+                    blk, tov,
                 ),
             )
 
-        team_counts = {}
-
-        for row in rows:
-            team_id = row[2]
-
-            team_counts[team_id] = (
-                team_counts.get(team_id, 0)
-                + 1
-            )
-
-        # Basic completeness check.
-        if (
-            len(team_counts) == 2
-            and min(team_counts.values()) >= 5
-        ):
-            cur.execute(
-                """
-                UPDATE games
-                SET stats_verified = TRUE
-                WHERE id = %s
-                """,
-                (game_id,),
-            )
-
+    # Stats are not marked verified until
+    # full box-score reconciliation exists.
     return len(rows)
 
 
@@ -634,16 +516,11 @@ def record_sync(
         cur.execute(
             """
             INSERT INTO sync_history (
-                job_name,
-                started_at,
-                completed_at,
-                status,
-                records_processed,
+                job_name, started_at, completed_at,
+                status, records_processed,
                 error_message
             )
-            VALUES (
-                %s, %s, NOW(), %s, %s, %s
-            )
+            VALUES (%s, %s, NOW(), %s, %s, %s)
             """,
             (
                 "nba_schedule_sync",
@@ -663,9 +540,7 @@ def main():
             "DATABASE_URL is missing"
         )
 
-    started = datetime.now(
-        timezone.utc
-    )
+    started = datetime.now(timezone.utc)
 
     with psycopg.connect(
         url,
@@ -683,15 +558,13 @@ def main():
             game_count = 0
             final_ids = set()
 
-            # Last 7 days and next 3 days.
             for offset in range(-7, 4):
                 day = today + timedelta(
                     days=offset
                 )
 
                 count, finals = sync_games(
-                    conn,
-                    day,
+                    conn, day
                 )
 
                 conn.commit()
@@ -700,8 +573,7 @@ def main():
                 final_ids.update(finals)
 
                 print(
-                    f"{day}: "
-                    f"{count} games processed",
+                    f"{day}: {count} games processed",
                     flush=True,
                 )
 
@@ -711,12 +583,10 @@ def main():
             for game_id in sorted(final_ids):
                 try:
                     count = sync_boxscore(
-                        conn,
-                        game_id,
+                        conn, game_id
                     )
 
                     conn.commit()
-
                     player_count += count
 
                     print(
@@ -747,24 +617,19 @@ def main():
                     )
                 )
 
-            total = (
-                team_count
-                + game_count
-                + player_count
-            )
-
             record_sync(
                 conn,
                 started,
                 "success",
-                total,
+                team_count
+                + game_count
+                + player_count,
             )
 
             conn.commit()
 
             print(
-                f"SUCCESS: "
-                f"{team_count} teams, "
+                f"SUCCESS: {team_count} teams, "
                 f"{game_count} games, "
                 f"{player_count} player rows",
                 flush=True,
@@ -780,7 +645,6 @@ def main():
                     "failed",
                     error=str(exc)[:2000],
                 )
-
                 conn.commit()
 
             except Exception:
@@ -798,5 +662,4 @@ if __name__ == "__main__":
             f"ERROR: {exc}",
             file=sys.stderr,
         )
-
         sys.exit(1)
