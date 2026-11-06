@@ -33,7 +33,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "psycopg[binary]==3.2.10"
 
-      - name: Collect all season games and players
+      - name: Find and run NBA season backfill
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python collector/backfill_season.py
+        shell: bash
+        run: |
+          echo "Searching for backfill_season.py..."
+
+          SCRIPT="$(find . -type f -name 'backfill_season.py' -not -path './.git/*' -print -quit)"
+
+          if [ -z "$SCRIPT" ]; then
+            echo "::error::backfill_season.py was not found anywhere in the repository."
+            echo "Repository files:"
+            find . -maxdepth 5 -type f | sort
+            exit 1
+          fi
+
+          echo "Found script: $SCRIPT"
+          python "$SCRIPT"
