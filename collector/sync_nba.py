@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 from nba_api.stats.static import teams as nba_teams
 
+
 BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 
 TEAM_ALIASES = {
@@ -22,8 +23,6 @@ TEAM_ALIASES = {
     "BRK": "BKN",
 }
 
-DEBUG_GAME = "401909277"
-
 
 def fetch_json(url):
     request = urllib.request.Request(
@@ -33,6 +32,7 @@ def fetch_json(url):
             "Accept": "application/json",
         },
     )
+
     with urllib.request.urlopen(request, timeout=25) as response:
         return json.load(response)
 
@@ -46,8 +46,8 @@ def team_maps(conn):
     with conn.cursor() as cur:
         cur.execute("SELECT id, abbreviation FROM teams")
         return {
-            abbr: team_id
-            for team_id, abbr in cur.fetchall()
+            abbreviation: team_id
+            for team_id, abbreviation in cur.fetchall()
         }
 
 
@@ -84,7 +84,11 @@ def sync_teams(conn):
 
 def score(entry):
     value = entry.get("score")
-    return int(value) if value not in (None, "") else None
+
+    if value in (None, ""):
+        return None
+
+    return int(value)
 
 
 def sync_games(conn, day):
@@ -126,8 +130,7 @@ def sync_games(conn, day):
 
             if home_id is None or away_id is None:
                 print(
-                    f"SKIP unsupported game {event.get('id')}: "
-                    f"{away_abbr} @ {home_abbr}",
+                    f"SKIP unknown teams: {away_abbr} @ {home_abbr}",
                     flush=True,
                 )
                 continue
@@ -148,9 +151,7 @@ def sync_games(conn, day):
             event_date = event.get("date")
 
             if not event_date:
-                raise RuntimeError(
-                    f"Missing date for game {event.get('id')}"
-                )
+                continue
 
             local_date = datetime.fromisoformat(
                 event_date.replace("Z", "+00:00")
@@ -170,10 +171,16 @@ def sync_games(conn, day):
             cur.execute(
                 """
                 INSERT INTO games (
-                    id, game_date, season,
-                    home_team_id, away_team_id,
-                    home_score, away_score,
-                    status, stats_verified, updated_at
+                    id,
+                    game_date,
+                    season,
+                    home_team_id,
+                    away_team_id,
+                    home_score,
+                    away_score,
+                    status,
+                    stats_verified,
+                    updated_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s,
@@ -232,9 +239,10 @@ def minutes_value(value):
         value = str(value).strip()
 
         if ":" in value:
-            mins, secs = value.split(":", 1)
+            minutes, seconds = value.split(":", 1)
+
             return round(
-                int(mins) + int(secs) / 60,
+                int(minutes) + int(seconds) / 60,
                 3,
             )
 
@@ -262,6 +270,18 @@ def pick(stats, *names):
     return None
 
 
+def made_shots(value):
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    if "-" in text:
+        text = text.split("-", 1)[0]
+
+    return number(text)
+
+
 def sync_boxscore(conn, game_id):
     summary = fetch_json(
         f"{BASE}/summary?event={game_id}"
@@ -273,29 +293,27 @@ def sync_boxscore(conn, game_id):
 
     if not sections:
         print(
-            f"SKIP game {game_id}: no player box score yet",
+            f"SKIP {game_id}: no box score available",
             flush=True,
         )
         return 0
 
     teams = team_maps(conn)
     rows = []
-    debug_count = 0
-    skipped_reasons = {}
+    skipped = {}
 
     for section in sections:
         team = section.get("team") or {}
 
-        abbr = normalize_team(
+        abbreviation = normalize_team(
             team.get("abbreviation")
         )
 
-        team_id = teams.get(abbr)
+        team_id = teams.get(abbreviation)
 
         if team_id is None:
             raise RuntimeError(
-                f"Unknown box score team {abbr} "
-                f"for game {game_id}"
+                f"Unknown team {abbreviation} in game {game_id}"
             )
 
         for group in section.get("statistics") or []:
@@ -317,49 +335,30 @@ def sync_boxscore(conn, game_id):
 
                 values = item.get("stats") or []
 
-                # DEBUG: Show up to 8 player samples.
-                if (
-                    game_id == DEBUG_GAME
-                    and debug_count < 8
-                ):
-                    print(
-                        "DEBUG BOX SCORE:",
-                        "labels=", labels,
-                        "player=", full_name,
-                        "stats=", values,
-                        "didNotPlay=", item.get("didNotPlay"),
-                        "reason=", item.get("reason"),
-                        flush=True,
-                    )
-                    debug_count += 1
-
                 if not athlete_id or not full_name:
-                    key = "missing athlete identity"
-                    skipped_reasons[key] = (
-                        skipped_reasons.get(key, 0) + 1
-                    )
+                    key = "missing identity"
+                    skipped[key] = skipped.get(key, 0) + 1
                     continue
 
-                if (
-                    item.get("didNotPlay")
-                    or item.get("reason")
-                ):
-                    key = "DNP"
-                    skipped_reasons[key] = (
-                        skipped_reasons.get(key, 0) + 1
-                    )
+                # FIX:
+                # ESPN can provide a reason such as
+                # "COACH'S DECISION" even for players
+                # who actually played.
+                #
+                # Only skip actual DNP players.
+                if item.get("didNotPlay") is True:
+                    key = "actual DNP"
+                    skipped[key] = skipped.get(key, 0) + 1
                     continue
 
-                if not values or not labels:
-                    key = "missing labels or values"
-                    skipped_reasons[key] = (
-                        skipped_reasons.get(key, 0) + 1
-                    )
+                if not labels or not values:
+                    key = "missing statistics"
+                    skipped[key] = skipped.get(key, 0) + 1
                     continue
 
                 stats = {
-                    label_key(key): value
-                    for key, value in zip(labels, values)
+                    label_key(label): value
+                    for label, value in zip(labels, values)
                 }
 
                 pts = number(
@@ -382,67 +381,68 @@ def sync_boxscore(conn, game_id):
                     value is None
                     for value in (pts, reb, ast, mins)
                 ):
-                    key = "missing required stat fields"
-                    skipped_reasons[key] = (
-                        skipped_reasons.get(key, 0) + 1
-                    )
+                    key = "incomplete stat fields"
+                    skipped[key] = skipped.get(key, 0) + 1
                     continue
 
-                threes = pick(
-                    stats,
-                    "3PT",
-                    "3PM-A",
-                    "3PM",
-                    "3P",
+                # ESPN supplies 3PT as made-attempted.
+                threes = made_shots(
+                    pick(
+                        stats,
+                        "3PT",
+                        "3PM-A",
+                        "3PM",
+                        "3P",
+                    )
                 )
 
-                if (
-                    threes is not None
-                    and "-" in str(threes)
-                ):
-                    threes = str(threes).split(
-                        "-", 1
-                    )[0]
+                steals = number(
+                    pick(stats, "STL", "STEALS")
+                )
+
+                blocks = number(
+                    pick(stats, "BLK", "BLOCKS")
+                )
+
+                turnovers = number(
+                    pick(
+                        stats,
+                        "TO",
+                        "TOV",
+                        "TURNOVERS",
+                    )
+                )
+
+                # Negative ESPN IDs prevent collisions
+                # with existing NBA API player IDs.
+                player_id = -int(athlete_id)
 
                 rows.append(
                     (
                         game_id,
-                        -int(athlete_id),
+                        player_id,
                         team_id,
                         full_name,
                         mins,
                         pts,
                         reb,
                         ast,
-                        number(threes),
-                        number(
-                            pick(stats, "STL", "STEALS")
-                        ),
-                        number(
-                            pick(stats, "BLK", "BLOCKS")
-                        ),
-                        number(
-                            pick(
-                                stats,
-                                "TO",
-                                "TOV",
-                                "TURNOVERS",
-                            )
-                        ),
+                        threes,
+                        steals,
+                        blocks,
+                        turnovers,
                     )
                 )
 
-    if skipped_reasons:
+    if skipped:
         print(
-            f"BOX SCORE {game_id} skipped: "
-            f"{skipped_reasons}",
+            f"BOX SCORE {game_id} skipped: {skipped}",
             flush=True,
         )
 
     if not rows:
         print(
-            f"SKIP game {game_id}: "
-            f"no complete player records",
+            f"SKIP {game_id}: no playable player records",
             flush=True,
         )
         return 0
@@ -450,16 +450,28 @@ def sync_boxscore(conn, game_id):
     with conn.cursor() as cur:
         for row in rows:
             (
-                gid, pid, tid, name,
-                mins, pts, reb, ast,
-                threes, stl, blk, tov,
+                gid,
+                pid,
+                tid,
+                name,
+                mins,
+                pts,
+                reb,
+                ast,
+                threes,
+                steals,
+                blocks,
+                turnovers,
             ) = row
 
             cur.execute(
                 """
                 INSERT INTO players (
-                    id, full_name, current_team_id,
-                    is_active, updated_at
+                    id,
+                    full_name,
+                    current_team_id,
+                    is_active,
+                    updated_at
                 )
                 VALUES (%s, %s, %s, TRUE, NOW())
                 ON CONFLICT (id) DO UPDATE SET
@@ -472,14 +484,21 @@ def sync_boxscore(conn, game_id):
             cur.execute(
                 """
                 INSERT INTO player_game_stats (
-                    game_id, player_id, team_id,
-                    minutes, points, rebounds,
-                    assists, threes_made,
-                    steals, blocks, turnovers
+                    game_id,
+                    player_id,
+                    team_id,
+                    minutes,
+                    points,
+                    rebounds,
+                    assists,
+                    threes_made,
+                    steals,
+                    blocks,
+                    turnovers
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (game_id, player_id)
                 DO UPDATE SET
@@ -494,14 +513,27 @@ def sync_boxscore(conn, game_id):
                     turnovers = EXCLUDED.turnovers
                 """,
                 (
-                    gid, pid, tid, mins, pts,
-                    reb, ast, threes, stl,
-                    blk, tov,
+                    gid,
+                    pid,
+                    tid,
+                    mins,
+                    pts,
+                    reb,
+                    ast,
+                    threes,
+                    steals,
+                    blocks,
+                    turnovers,
                 ),
             )
 
-    # Stats are not marked verified until
-    # full box-score reconciliation exists.
+    # Do not claim verification until the
+    # full team/player box score is reconciled.
+    print(
+        f"BOX SCORE {game_id}: saved {len(rows)} players",
+        flush=True,
+    )
+
     return len(rows)
 
 
@@ -516,8 +548,11 @@ def record_sync(
         cur.execute(
             """
             INSERT INTO sync_history (
-                job_name, started_at, completed_at,
-                status, records_processed,
+                job_name,
+                started_at,
+                completed_at,
+                status,
+                records_processed,
                 error_message
             )
             VALUES (%s, %s, NOW(), %s, %s, %s)
@@ -536,9 +571,7 @@ def main():
     url = os.environ.get("DATABASE_URL")
 
     if not url:
-        raise RuntimeError(
-            "DATABASE_URL is missing"
-        )
+        raise RuntimeError("DATABASE_URL is missing")
 
     started = datetime.now(timezone.utc)
 
@@ -547,6 +580,7 @@ def main():
         connect_timeout=10,
         sslmode="require",
     ) as conn:
+
         try:
             team_count = sync_teams(conn)
             conn.commit()
@@ -558,15 +592,12 @@ def main():
             game_count = 0
             final_ids = set()
 
+            # Previous 7 days plus today and
+            # the next 3 days.
             for offset in range(-7, 4):
-                day = today + timedelta(
-                    days=offset
-                )
+                day = today + timedelta(days=offset)
 
-                count, finals = sync_games(
-                    conn, day
-                )
-
+                count, finals = sync_games(conn, day)
                 conn.commit()
 
                 game_count += count
@@ -582,16 +613,13 @@ def main():
 
             for game_id in sorted(final_ids):
                 try:
-                    count = sync_boxscore(
-                        conn, game_id
-                    )
-
+                    count = sync_boxscore(conn, game_id)
                     conn.commit()
+
                     player_count += count
 
                     print(
-                        f"{game_id}: "
-                        f"{count} player rows",
+                        f"{game_id}: {count} player rows",
                         flush=True,
                     )
 
@@ -603,27 +631,21 @@ def main():
                     )
 
                     print(
-                        f"WARNING: boxscore "
-                        f"{game_id}: {exc}",
+                        f"WARNING: {game_id}: {exc}",
                         flush=True,
                     )
 
             if failed_games:
                 raise RuntimeError(
-                    f"{len(failed_games)} "
-                    f"box scores failed: "
-                    + "; ".join(
-                        failed_games[:3]
-                    )
+                    f"{len(failed_games)} box scores failed: "
+                    + "; ".join(failed_games[:3])
                 )
 
             record_sync(
                 conn,
                 started,
                 "success",
-                team_count
-                + game_count
-                + player_count,
+                team_count + game_count + player_count,
             )
 
             conn.commit()
