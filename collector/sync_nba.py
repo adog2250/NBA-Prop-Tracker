@@ -4,17 +4,17 @@ import os
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import psycopg
 from nba_api.stats.static import teams as nba_teams
 
 
-ESPN_SCOREBOARD = (
+BASE = (
     "https://site.api.espn.com/apis/site/v2/"
-    "sports/basketball/nba/scoreboard"
+    "sports/basketball/nba"
 )
 
-# ESPN and NBA may use different team abbreviations.
 TEAM_ALIASES = {
     "GS": "GSW",
     "NY": "NYK",
@@ -38,29 +38,28 @@ def fetch_json(url):
 
     with urllib.request.urlopen(
         request,
-        timeout=20,
+        timeout=25,
     ) as response:
         return json.load(response)
+
+
+def normalize_team(value):
+    value = str(value or "").strip().upper()
+    return TEAM_ALIASES.get(value, value)
 
 
 def sync_teams(conn):
     records = nba_teams.get_teams()
 
     if len(records) < 30:
-        raise RuntimeError(
-            f"Incomplete NBA team list: {len(records)} teams"
-        )
+        raise RuntimeError("Incomplete NBA team list")
 
     with conn.cursor() as cur:
         for team in records:
             cur.execute(
                 """
                 INSERT INTO teams (
-                    id,
-                    abbreviation,
-                    name,
-                    city,
-                    updated_at
+                    id, abbreviation, name, city, updated_at
                 )
                 VALUES (%s, %s, %s, %s, NOW())
                 ON CONFLICT (id) DO UPDATE SET
@@ -80,163 +79,128 @@ def sync_teams(conn):
     return len(records)
 
 
-def get_team_ids(conn):
+def team_maps(conn):
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, abbreviation FROM teams"
         )
 
         return {
-            abbreviation: team_id
-            for team_id, abbreviation in cur.fetchall()
+            abbr: team_id
+            for team_id, abbr in cur.fetchall()
         }
 
 
-def normalize_team(abbreviation):
-    if not abbreviation:
-        return None
-
-    abbreviation = abbreviation.upper().strip()
-
-    return TEAM_ALIASES.get(
-        abbreviation,
-        abbreviation,
-    )
-
-
-def parse_score(entry):
+def score(entry):
     value = entry.get("score")
 
-    if value is None or value == "":
+    if value in (None, ""):
         return None
 
     return int(value)
 
 
 def sync_games(conn, day):
-    date_string = day.strftime("%Y%m%d")
-
     url = (
-        f"{ESPN_SCOREBOARD}"
-        f"?dates={date_string}&limit=100"
+        f"{BASE}/scoreboard"
+        f"?dates={day:%Y%m%d}&limit=100"
     )
 
     data = fetch_json(url)
+    teams = team_maps(conn)
 
-    team_ids = get_team_ids(conn)
-
-    count = 0
+    processed = 0
+    finals = []
 
     with conn.cursor() as cur:
         for event in data.get("events", []):
             competitions = event.get(
-                "competitions",
-                [],
-            )
-
-            if not competitions:
-                continue
+                "competitions"
+            ) or [{}]
 
             competition = competitions[0]
 
-            home = None
-            away = None
-
-            for entry in competition.get(
-                "competitors",
-                [],
-            ):
-                raw_abbreviation = (
-                    entry.get("team", {})
-                    .get("abbreviation")
+            entries = {
+                entry.get("homeAway"): entry
+                for entry in competition.get(
+                    "competitors", []
                 )
+            }
 
-                abbreviation = normalize_team(
-                    raw_abbreviation
-                )
-
-                team_id = team_ids.get(
-                    abbreviation
-                )
-
-                if entry.get("homeAway") == "home":
-                    home = (team_id, entry)
-
-                elif entry.get("homeAway") == "away":
-                    away = (team_id, entry)
+            home = entries.get("home")
+            away = entries.get("away")
 
             if not home or not away:
                 continue
 
-            if home[0] is None or away[0] is None:
-                home_abbr = (
-                    home[1].get("team", {})
-                    .get("abbreviation")
+            home_abbr = normalize_team(
+                home.get("team", {}).get(
+                    "abbreviation"
                 )
+            )
 
-                away_abbr = (
-                    away[1].get("team", {})
-                    .get("abbreviation")
+            away_abbr = normalize_team(
+                away.get("team", {}).get(
+                    "abbreviation"
                 )
+            )
 
-                raise RuntimeError(
-                    f"Unknown team in game "
+            home_id = teams.get(home_abbr)
+            away_id = teams.get(away_abbr)
+
+            if home_id is None or away_id is None:
+                print(
+                    f"SKIP unsupported game "
                     f"{event.get('id')}: "
-                    f"home={home_abbr}, "
-                    f"away={away_abbr}"
+                    f"{away_abbr} @ {home_abbr}",
+                    flush=True,
                 )
+                continue
 
             status_info = (
                 event.get("status", {})
                 .get("type", {})
             )
 
+            complete = bool(
+                status_info.get("completed")
+            )
+
             state = status_info.get(
-                "state",
-                "pre",
+                "state", "pre"
             )
 
-            completed = status_info.get(
-                "completed",
-                False,
-            )
-
-            if completed:
+            if complete:
                 status = "final"
-
             elif state == "in":
                 status = "live"
-
             else:
                 status = "scheduled"
 
-            event_date = event.get(
-                "date",
-                "",
-            )
+            event_date = event.get("date")
 
-            game_date = event_date[:10]
-
-            if not game_date:
+            if not event_date:
                 raise RuntimeError(
-                    f"Game {event.get('id')} "
-                    f"is missing a date"
+                    f"Missing date for game "
+                    f"{event.get('id')}"
                 )
 
-            season_info = event.get(
-                "season",
-                {},
+            local_date = datetime.fromisoformat(
+                event_date.replace(
+                    "Z", "+00:00"
+                )
+            ).astimezone(
+                ZoneInfo("America/New_York")
+            ).date()
+
+            season = event.get("season") or {}
+
+            season_value = (
+                f"{season.get('year', day.year)}-"
+                f"{season.get('type', 2)}"
             )
 
-            season_year = season_info.get(
-                "year",
-                day.year,
-            )
-
-            season_type = season_info.get(
-                "type",
-                2,
-            )
+            game_id = str(event["id"])
 
             cur.execute(
                 """
@@ -267,28 +231,394 @@ def sync_games(conn, day):
                     updated_at = NOW()
                 """,
                 (
-                    str(event["id"]),
-                    game_date,
-                    f"{season_year}-{season_type}",
-                    home[0],
-                    away[0],
-                    parse_score(home[1]),
-                    parse_score(away[1]),
+                    game_id,
+                    local_date,
+                    season_value,
+                    home_id,
+                    away_id,
+                    score(home),
+                    score(away),
                     status,
                 ),
             )
 
-            count += 1
+            processed += 1
 
-    return count
+            if complete:
+                finals.append(game_id)
+
+    return processed, finals
+
+
+def number(value):
+    if value is None:
+        return None
+
+    value = str(value).strip()
+
+    if value in (
+        "", "--", "-", "DNP", "N/A"
+    ):
+        return None
+
+    try:
+        return int(float(value))
+    except (ValueError, TypeError):
+        return None
+
+
+def minutes_value(value):
+    if value is None:
+        return None
+
+    value = str(value).strip()
+
+    if ":" in value:
+        try:
+            mins, secs = value.split(
+                ":", 1
+            )
+
+            return round(
+                int(mins) + int(secs) / 60,
+                3,
+            )
+        except (ValueError, TypeError):
+            return None
+
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def label_key(label):
+    return (
+        str(label)
+        .strip()
+        .upper()
+        .replace(" ", "")
+        .replace("_", "")
+    )
+
+
+def pick(stats, *names):
+    for name in names:
+        if name in stats:
+            return stats[name]
+
+    return None
+
+
+def sync_boxscore(conn, game_id):
+    url = (
+        f"{BASE}/summary?event={game_id}"
+    )
+
+    summary = fetch_json(url)
+
+    sections = (
+        (summary.get("boxscore") or {})
+        .get("players") or []
+    )
+
+    if not sections:
+        print(
+            f"SKIP game {game_id}: "
+            f"no player box score yet",
+            flush=True,
+        )
+        return 0
+
+    teams = team_maps(conn)
+    rows = []
+
+    for section in sections:
+        team = section.get("team") or {}
+
+        abbr = normalize_team(
+            team.get("abbreviation")
+        )
+
+        team_id = teams.get(abbr)
+
+        if team_id is None:
+            raise RuntimeError(
+                f"Unknown box score team "
+                f"{abbr} for game {game_id}"
+            )
+
+        for group in (
+            section.get("statistics") or []
+        ):
+            labels = (
+                group.get("labels")
+                or group.get("names")
+                or []
+            )
+
+            for item in (
+                group.get("athletes") or []
+            ):
+                athlete = (
+                    item.get("athlete") or {}
+                )
+
+                athlete_id = athlete.get("id")
+
+                full_name = (
+                    athlete.get("displayName")
+                    or athlete.get("fullName")
+                )
+
+                if not athlete_id or not full_name:
+                    continue
+
+                # Do not create fake zero
+                # stats for players who did not play.
+                if (
+                    item.get("didNotPlay")
+                    or item.get("reason")
+                ):
+                    continue
+
+                values = item.get("stats") or []
+
+                if not values or not labels:
+                    continue
+
+                stats = {
+                    label_key(key): value
+                    for key, value in zip(
+                        labels, values
+                    )
+                }
+
+                pts = number(
+                    pick(
+                        stats,
+                        "PTS",
+                        "POINTS",
+                    )
+                )
+
+                reb = number(
+                    pick(
+                        stats,
+                        "REB",
+                        "REBOUNDS",
+                    )
+                )
+
+                ast = number(
+                    pick(
+                        stats,
+                        "AST",
+                        "ASSISTS",
+                    )
+                )
+
+                mins = minutes_value(
+                    pick(
+                        stats,
+                        "MIN",
+                        "MINUTES",
+                    )
+                )
+
+                if (
+                    pts is None
+                    or reb is None
+                    or ast is None
+                    or mins is None
+                ):
+                    continue
+
+                threes = pick(
+                    stats,
+                    "3PT",
+                    "3PM-A",
+                    "3PM",
+                    "3P",
+                )
+
+                if (
+                    threes is not None
+                    and "-" in str(threes)
+                ):
+                    threes = str(
+                        threes
+                    ).split("-", 1)[0]
+
+                # Negative IDs distinguish ESPN
+                # player IDs from NBA player IDs.
+                player_id = -int(athlete_id)
+
+                rows.append(
+                    (
+                        game_id,
+                        player_id,
+                        team_id,
+                        full_name,
+                        mins,
+                        pts,
+                        reb,
+                        ast,
+                        number(threes),
+                        number(
+                            pick(
+                                stats,
+                                "STL",
+                                "STEALS",
+                            )
+                        ),
+                        number(
+                            pick(
+                                stats,
+                                "BLK",
+                                "BLOCKS",
+                            )
+                        ),
+                        number(
+                            pick(
+                                stats,
+                                "TO",
+                                "TOV",
+                                "TURNOVERS",
+                            )
+                        ),
+                    )
+                )
+
+    if not rows:
+        print(
+            f"SKIP game {game_id}: "
+            f"no complete player records",
+            flush=True,
+        )
+        return 0
+
+    with conn.cursor() as cur:
+        for row in rows:
+            (
+                gid,
+                pid,
+                tid,
+                name,
+                mins,
+                pts,
+                reb,
+                ast,
+                threes,
+                stl,
+                blk,
+                tov,
+            ) = row
+
+            cur.execute(
+                """
+                INSERT INTO players (
+                    id,
+                    full_name,
+                    current_team_id,
+                    is_active,
+                    updated_at
+                )
+                VALUES (
+                    %s, %s, %s, TRUE, NOW()
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    full_name = EXCLUDED.full_name,
+                    updated_at = NOW()
+                """,
+                (
+                    pid,
+                    name,
+                    tid,
+                ),
+            )
+
+            cur.execute(
+                """
+                INSERT INTO player_game_stats (
+                    game_id,
+                    player_id,
+                    team_id,
+                    minutes,
+                    points,
+                    rebounds,
+                    assists,
+                    threes_made,
+                    steals,
+                    blocks,
+                    turnovers
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (
+                    game_id, player_id
+                )
+                DO UPDATE SET
+                    team_id = EXCLUDED.team_id,
+                    minutes = EXCLUDED.minutes,
+                    points = EXCLUDED.points,
+                    rebounds = EXCLUDED.rebounds,
+                    assists = EXCLUDED.assists,
+                    threes_made = EXCLUDED.threes_made,
+                    steals = EXCLUDED.steals,
+                    blocks = EXCLUDED.blocks,
+                    turnovers = EXCLUDED.turnovers
+                """,
+                (
+                    gid,
+                    pid,
+                    tid,
+                    mins,
+                    pts,
+                    reb,
+                    ast,
+                    threes,
+                    stl,
+                    blk,
+                    tov,
+                ),
+            )
+
+        team_counts = {}
+
+        for row in rows:
+            team_id = row[2]
+
+            team_counts[team_id] = (
+                team_counts.get(team_id, 0)
+                + 1
+            )
+
+        # Basic completeness check.
+        if (
+            len(team_counts) == 2
+            and min(team_counts.values()) >= 5
+        ):
+            cur.execute(
+                """
+                UPDATE games
+                SET stats_verified = TRUE
+                WHERE id = %s
+                """,
+                (game_id,),
+            )
+
+    return len(rows)
 
 
 def record_sync(
     conn,
-    started_at,
+    started,
     status,
-    records_processed=0,
-    error_message=None,
+    count=0,
+    error=None,
 ):
     with conn.cursor() as cur:
         cur.execute(
@@ -307,77 +637,126 @@ def record_sync(
             """,
             (
                 "nba_schedule_sync",
-                started_at,
+                started,
                 status,
-                records_processed,
-                error_message,
+                count,
+                error,
             ),
         )
 
 
 def main():
-    database_url = os.environ.get(
-        "DATABASE_URL"
-    )
+    url = os.environ.get("DATABASE_URL")
 
-    if not database_url:
+    if not url:
         raise RuntimeError(
             "DATABASE_URL is missing"
         )
 
-    started_at = datetime.now(
+    started = datetime.now(
         timezone.utc
     )
 
     with psycopg.connect(
-        database_url,
+        url,
         connect_timeout=10,
         sslmode="require",
     ) as conn:
-
         try:
             team_count = sync_teams(conn)
             conn.commit()
 
             today = datetime.now(
-                timezone.utc
+                ZoneInfo("America/New_York")
             ).date()
 
             game_count = 0
+            final_ids = set()
 
-            # Check recent and upcoming games.
+            # Last 7 days and next 3 days.
             for offset in range(-7, 4):
                 day = today + timedelta(
                     days=offset
                 )
 
-                processed = sync_games(
+                count, finals = sync_games(
                     conn,
                     day,
                 )
 
-                game_count += processed
-
                 conn.commit()
+
+                game_count += count
+                final_ids.update(finals)
 
                 print(
                     f"{day}: "
-                    f"{processed} games processed",
+                    f"{count} games processed",
                     flush=True,
                 )
 
+            player_count = 0
+            failed_games = []
+
+            for game_id in sorted(final_ids):
+                try:
+                    count = sync_boxscore(
+                        conn,
+                        game_id,
+                    )
+
+                    conn.commit()
+
+                    player_count += count
+
+                    print(
+                        f"{game_id}: "
+                        f"{count} player rows",
+                        flush=True,
+                    )
+
+                except Exception as exc:
+                    conn.rollback()
+
+                    failed_games.append(
+                        f"{game_id}: {exc}"
+                    )
+
+                    print(
+                        f"WARNING: boxscore "
+                        f"{game_id}: {exc}",
+                        flush=True,
+                    )
+
+            if failed_games:
+                raise RuntimeError(
+                    f"{len(failed_games)} "
+                    f"box scores failed: "
+                    + "; ".join(
+                        failed_games[:3]
+                    )
+                )
+
+            total = (
+                team_count
+                + game_count
+                + player_count
+            )
+
             record_sync(
                 conn,
-                started_at,
+                started,
                 "success",
-                team_count + game_count,
+                total,
             )
 
             conn.commit()
 
             print(
-                f"SUCCESS: {team_count} teams, "
-                f"{game_count} game records processed",
+                f"SUCCESS: "
+                f"{team_count} teams, "
+                f"{game_count} games, "
+                f"{player_count} player rows",
                 flush=True,
             )
 
@@ -387,9 +766,9 @@ def main():
             try:
                 record_sync(
                     conn,
-                    started_at,
+                    started,
                     "failed",
-                    error_message=str(exc)[:2000],
+                    error=str(exc)[:2000],
                 )
 
                 conn.commit()
