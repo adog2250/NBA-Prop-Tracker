@@ -14,6 +14,18 @@ ESPN_SCOREBOARD = (
     "sports/basketball/nba/scoreboard"
 )
 
+# ESPN and NBA may use different team abbreviations.
+TEAM_ALIASES = {
+    "GS": "GSW",
+    "NY": "NYK",
+    "NO": "NOP",
+    "SA": "SAS",
+    "UTAH": "UTA",
+    "WSH": "WAS",
+    "PHO": "PHX",
+    "BRK": "BKN",
+}
+
 
 def fetch_json(url):
     request = urllib.request.Request(
@@ -24,7 +36,10 @@ def fetch_json(url):
         },
     )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with urllib.request.urlopen(
+        request,
+        timeout=20,
+    ) as response:
         return json.load(response)
 
 
@@ -32,14 +47,21 @@ def sync_teams(conn):
     records = nba_teams.get_teams()
 
     if len(records) < 30:
-        raise RuntimeError("NBA team list is incomplete")
+        raise RuntimeError(
+            f"Incomplete NBA team list: {len(records)} teams"
+        )
 
     with conn.cursor() as cur:
         for team in records:
             cur.execute(
                 """
-                INSERT INTO teams
-                    (id, abbreviation, name, city, updated_at)
+                INSERT INTO teams (
+                    id,
+                    abbreviation,
+                    name,
+                    city,
+                    updated_at
+                )
                 VALUES (%s, %s, %s, %s, NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     abbreviation = EXCLUDED.abbreviation,
@@ -60,37 +82,86 @@ def sync_teams(conn):
 
 def get_team_ids(conn):
     with conn.cursor() as cur:
-        cur.execute("SELECT id, abbreviation FROM teams")
+        cur.execute(
+            "SELECT id, abbreviation FROM teams"
+        )
+
         return {
             abbreviation: team_id
             for team_id, abbreviation in cur.fetchall()
         }
 
 
+def normalize_team(abbreviation):
+    if not abbreviation:
+        return None
+
+    abbreviation = abbreviation.upper().strip()
+
+    return TEAM_ALIASES.get(
+        abbreviation,
+        abbreviation,
+    )
+
+
+def parse_score(entry):
+    value = entry.get("score")
+
+    if value is None or value == "":
+        return None
+
+    return int(value)
+
+
 def sync_games(conn, day):
     date_string = day.strftime("%Y%m%d")
-    url = f"{ESPN_SCOREBOARD}?dates={date_string}&limit=100"
+
+    url = (
+        f"{ESPN_SCOREBOARD}"
+        f"?dates={date_string}&limit=100"
+    )
+
     data = fetch_json(url)
 
     team_ids = get_team_ids(conn)
+
     count = 0
 
     with conn.cursor() as cur:
         for event in data.get("events", []):
-            competitions = event.get("competitions", [])
+            competitions = event.get(
+                "competitions",
+                [],
+            )
+
             if not competitions:
                 continue
 
             competition = competitions[0]
+
             home = None
             away = None
 
-            for entry in competition.get("competitors", []):
-                abbreviation = entry.get("team", {}).get("abbreviation")
-                team_id = team_ids.get(abbreviation)
+            for entry in competition.get(
+                "competitors",
+                [],
+            ):
+                raw_abbreviation = (
+                    entry.get("team", {})
+                    .get("abbreviation")
+                )
+
+                abbreviation = normalize_team(
+                    raw_abbreviation
+                )
+
+                team_id = team_ids.get(
+                    abbreviation
+                )
 
                 if entry.get("homeAway") == "home":
                     home = (team_id, entry)
+
                 elif entry.get("homeAway") == "away":
                     away = (team_id, entry)
 
@@ -98,43 +169,88 @@ def sync_games(conn, day):
                 continue
 
             if home[0] is None or away[0] is None:
-                raise RuntimeError(
-                    f"Unknown team in game {event.get('id')}"
+                home_abbr = (
+                    home[1].get("team", {})
+                    .get("abbreviation")
                 )
 
-            status_info = event.get("status", {}).get("type", {})
-            state = status_info.get("state", "pre")
-            completed = status_info.get("completed", False)
+                away_abbr = (
+                    away[1].get("team", {})
+                    .get("abbreviation")
+                )
+
+                raise RuntimeError(
+                    f"Unknown team in game "
+                    f"{event.get('id')}: "
+                    f"home={home_abbr}, "
+                    f"away={away_abbr}"
+                )
+
+            status_info = (
+                event.get("status", {})
+                .get("type", {})
+            )
+
+            state = status_info.get(
+                "state",
+                "pre",
+            )
+
+            completed = status_info.get(
+                "completed",
+                False,
+            )
 
             if completed:
                 status = "final"
+
             elif state == "in":
                 status = "live"
+
             else:
                 status = "scheduled"
 
-            def score(entry):
-                value = entry.get("score")
-                if value is None or value == "":
-                    return None
-                return int(value)
+            event_date = event.get(
+                "date",
+                "",
+            )
 
-            game_date = event.get("date", "")[:10]
+            game_date = event_date[:10]
 
             if not game_date:
-                raise RuntimeError("Game is missing a date")
+                raise RuntimeError(
+                    f"Game {event.get('id')} "
+                    f"is missing a date"
+                )
 
-            season = event.get("season", {})
-            season_year = season.get("year", day.year)
-            season_type = season.get("type", 2)
+            season_info = event.get(
+                "season",
+                {},
+            )
+
+            season_year = season_info.get(
+                "year",
+                day.year,
+            )
+
+            season_type = season_info.get(
+                "type",
+                2,
+            )
 
             cur.execute(
                 """
                 INSERT INTO games (
-                    id, game_date, season,
-                    home_team_id, away_team_id,
-                    home_score, away_score,
-                    status, stats_verified, updated_at
+                    id,
+                    game_date,
+                    season,
+                    home_team_id,
+                    away_team_id,
+                    home_score,
+                    away_score,
+                    status,
+                    stats_verified,
+                    updated_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s,
@@ -156,93 +272,142 @@ def sync_games(conn, day):
                     f"{season_year}-{season_type}",
                     home[0],
                     away[0],
-                    score(home[1]),
-                    score(away[1]),
+                    parse_score(home[1]),
+                    parse_score(away[1]),
                     status,
                 ),
             )
+
             count += 1
 
     return count
 
 
+def record_sync(
+    conn,
+    started_at,
+    status,
+    records_processed=0,
+    error_message=None,
+):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO sync_history (
+                job_name,
+                started_at,
+                completed_at,
+                status,
+                records_processed,
+                error_message
+            )
+            VALUES (
+                %s, %s, NOW(), %s, %s, %s
+            )
+            """,
+            (
+                "nba_schedule_sync",
+                started_at,
+                status,
+                records_processed,
+                error_message,
+            ),
+        )
+
+
 def main():
-    database_url = os.environ.get("DATABASE_URL")
+    database_url = os.environ.get(
+        "DATABASE_URL"
+    )
 
     if not database_url:
-        raise RuntimeError("DATABASE_URL is missing")
+        raise RuntimeError(
+            "DATABASE_URL is missing"
+        )
 
-    started_at = datetime.now(timezone.utc)
+    started_at = datetime.now(
+        timezone.utc
+    )
 
     with psycopg.connect(
         database_url,
         connect_timeout=10,
         sslmode="require",
     ) as conn:
+
         try:
             team_count = sync_teams(conn)
             conn.commit()
 
-            today = datetime.now(timezone.utc).date()
+            today = datetime.now(
+                timezone.utc
+            ).date()
+
             game_count = 0
 
-            # Recent and upcoming games.
+            # Check recent and upcoming games.
             for offset in range(-7, 4):
-                day = today + timedelta(days=offset)
-                game_count += sync_games(conn, day)
+                day = today + timedelta(
+                    days=offset
+                )
+
+                processed = sync_games(
+                    conn,
+                    day,
+                )
+
+                game_count += processed
+
                 conn.commit()
 
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO sync_history (
-                        job_name, started_at, completed_at,
-                        status, records_processed
-                    )
-                    VALUES (%s, %s, NOW(), %s, %s)
-                    """,
-                    (
-                        "nba_schedule_sync",
-                        started_at,
-                        "success",
-                        team_count + game_count,
-                    ),
+                print(
+                    f"{day}: "
+                    f"{processed} games processed",
+                    flush=True,
                 )
+
+            record_sync(
+                conn,
+                started_at,
+                "success",
+                team_count + game_count,
+            )
 
             conn.commit()
 
             print(
                 f"SUCCESS: {team_count} teams, "
-                f"{game_count} game records processed"
+                f"{game_count} game records processed",
+                flush=True,
             )
 
         except Exception as exc:
             conn.rollback()
 
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO sync_history (
-                        job_name, started_at, completed_at,
-                        status, error_message
-                    )
-                    VALUES (%s, %s, NOW(), %s, %s)
-                    """,
-                    (
-                        "nba_schedule_sync",
-                        started_at,
-                        "failed",
-                        str(exc)[:2000],
-                    ),
+            try:
+                record_sync(
+                    conn,
+                    started_at,
+                    "failed",
+                    error_message=str(exc)[:2000],
                 )
 
-            conn.commit()
+                conn.commit()
+
+            except Exception:
+                conn.rollback()
+
             raise
 
 
 if __name__ == "__main__":
     try:
         main()
+
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: {exc}",
+            file=sys.stderr,
+        )
+
         sys.exit(1)
