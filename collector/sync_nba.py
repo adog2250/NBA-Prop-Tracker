@@ -383,6 +383,16 @@ def sync_boxscore(conn, game_id):
                     continue
 
                 values = item.get("stats") or []
+                if game_id == "401909277":
+    print(
+        "DEBUG BOX SCORE:",
+        "labels=", labels,
+        "player=", full_name,
+        "stats=", values,
+        "didNotPlay=", item.get("didNotPlay"),
+        "reason=", item.get("reason"),
+        flush=True,
+    )
 
                 if not values or not labels:
                     continue
