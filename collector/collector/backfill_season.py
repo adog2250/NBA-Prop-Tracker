@@ -1,32 +1,35 @@
 
-"""Backfill 2026-27 NBA regular-season game logs from ESPN.
+"""NBA Prop Tracker: full 2026-27 regular-season backfill.
 
-Idempotent: never deletes historical stats.
-Safe to rerun alongside sync_nba.py.
+Collects completed NBA games, players, rosters, and box scores.
+Safe to rerun. Does not delete existing records.
 """
 
 import json
 import os
 import time
 from datetime import date, datetime, timedelta, timezone
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import psycopg
 
+
 BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
-START = date(2026, 10, 20)
+START_DATE = date(2026, 10, 20)
 SEASON = "2026-27"
-DELAY = float(os.getenv("ESPN_DELAY_SECONDS", "0.35"))
+REQUEST_DELAY = 0.4
 
 
 def fetch(path, params=None):
-    url = BASE + path + ("?" + urlencode(params) if params else "")
+    url = BASE + path
+
+    if params:
+        url += "?" + urlencode(params)
 
     for attempt in range(4):
         try:
-            req = Request(
+            request = Request(
                 url,
                 headers={
                     "User-Agent": "Mozilla/5.0 NBA-Prop-Tracker",
@@ -34,22 +37,16 @@ def fetch(path, params=None):
                 },
             )
 
-            with urlopen(req, timeout=30) as response:
-                payload = json.load(response)
+            with urlopen(request, timeout=30) as response:
+                data = json.load(response)
 
-            time.sleep(DELAY)
-            return payload
+            time.sleep(REQUEST_DELAY)
+            return data
 
-        except (
-            HTTPError,
-            URLError,
-            TimeoutError,
-            ValueError,
-            OSError,
-        ) as exc:
+        except Exception as error:
             print(
-                f"FETCH ERROR attempt={attempt + 1} "
-                f"url={url} error={exc}",
+                f"Request failed ({attempt + 1}/4): "
+                f"{url}: {error}",
                 flush=True,
             )
 
@@ -59,20 +56,23 @@ def fetch(path, params=None):
     return None
 
 
-def integer(value):
+def to_int(value):
     try:
         return int(float(str(value).replace(",", "")))
     except (ValueError, TypeError):
         return 0
 
 
-def mins(value):
+def to_minutes(value):
     try:
         value = str(value or "0")
 
         if ":" in value:
-            m, s = value.split(":", 1)
-            return round(int(m) + int(s) / 60, 3)
+            minute, second = value.split(":", 1)
+            return round(
+                int(minute) + int(second) / 60,
+                3,
+            )
 
         return float(value)
 
@@ -80,13 +80,15 @@ def mins(value):
         return 0.0
 
 
-def team_ids(cur):
-    cur.execute("SELECT id, abbreviation")
+def get_teams(cursor):
+    cursor.execute(
+        "SELECT id, abbreviation FROM teams"
+    )
 
-    result = {
-        str(abbr).upper(): int(tid)
-        for tid, abbr in cur.fetchall()
-        if abbr
+    teams = {
+        str(abbreviation).upper(): int(team_id)
+        for team_id, abbreviation in cursor.fetchall()
+        if abbreviation
     }
 
     aliases = {
@@ -97,20 +99,20 @@ def team_ids(cur):
         "UTAH": "UTA",
     }
 
-    for alias, canonical in aliases.items():
-        if canonical in result:
-            result[alias] = result[canonical]
+    for alias, actual in aliases.items():
+        if actual in teams:
+            teams[alias] = teams[actual]
 
-    if len(set(result.values())) < 30:
+    if len(set(teams.values())) < 30:
         raise RuntimeError(
-            "Database must contain all 30 teams before backfill"
+            "The database must contain all 30 NBA teams."
         )
 
-    return result
+    return teams
 
 
-def upsert_player(cur, athlete, current_team=None):
-    raw = athlete.get("id")
+def save_player(cursor, athlete, team_id=None):
+    raw_id = athlete.get("id")
 
     name = (
         athlete.get("displayName")
@@ -118,13 +120,13 @@ def upsert_player(cur, athlete, current_team=None):
         or athlete.get("name")
     )
 
-    if not raw or not str(raw).isdigit() or not name:
+    if not raw_id or not str(raw_id).isdigit() or not name:
         return None
 
-    pid = -int(raw)
+    player_id = -int(raw_id)
 
-    if current_team is None:
-        cur.execute(
+    if team_id is None:
+        cursor.execute(
             """
             INSERT INTO players
                 (id, full_name, is_active, updated_at)
@@ -133,10 +135,11 @@ def upsert_player(cur, athlete, current_team=None):
                 full_name = EXCLUDED.full_name,
                 updated_at = NOW()
             """,
-            (pid, name),
+            (player_id, name),
         )
+
     else:
-        cur.execute(
+        cursor.execute(
             """
             INSERT INTO players
                 (id, full_name, current_team_id,
@@ -148,65 +151,67 @@ def upsert_player(cur, athlete, current_team=None):
                 is_active = TRUE,
                 updated_at = NOW()
             """,
-            (pid, name, current_team),
+            (player_id, name, team_id),
         )
 
-    return pid
+    return player_id
 
 
-def sync_rosters(cur, teams):
+def sync_rosters(cursor, teams):
     payload = fetch("/teams")
 
     if payload is None:
         print(
-            "WARNING: roster index unavailable; "
-            "proceeding with game backfill",
+            "Could not load team directory.",
             flush=True,
         )
         return 0
 
-    sports = payload.get("sports") or []
-
-    leagues = (
-        sports[0].get("leagues") or []
-    ) if sports else []
-
-    entries = (
-        leagues[0].get("teams") or []
-    ) if leagues else []
-
     count = 0
 
-    for entry in entries:
-        team = entry.get("team") or {}
+    for sport in payload.get("sports") or []:
+        for league in sport.get("leagues") or []:
+            for entry in league.get("teams") or []:
+                team = entry.get("team") or {}
 
-        tid = teams.get(
-            str(team.get("abbreviation", "")).upper()
-        )
+                team_id = teams.get(
+                    str(
+                        team.get("abbreviation", "")
+                    ).upper()
+                )
 
-        if tid is None or not team.get("id"):
-            continue
+                espn_id = team.get("id")
 
-        roster = fetch(
-            "/teams/" + str(team["id"]) + "/roster"
-        )
+                if team_id is None or not espn_id:
+                    continue
 
-        if roster is None:
-            continue
+                roster = fetch(
+                    f"/teams/{espn_id}/roster"
+                )
 
-        for group in roster.get("athletes") or []:
-            athletes = group.get("items") or [group]
+                if roster is None:
+                    continue
 
-            for athlete in athletes:
-                if upsert_player(
-                    cur, athlete, tid
-                ) is not None:
-                    count += 1
+                for group in roster.get("athletes") or []:
+                    if "items" in group:
+                        athletes = group.get("items") or []
+                    else:
+                        athletes = [group]
+
+                    for athlete in athletes:
+                        player_id = save_player(
+                            cursor,
+                            athlete,
+                            team_id,
+                        )
+
+                        if player_id is not None:
+                            count += 1
 
     return count
 
 
-def upsert_game(cur, event, day, teams):
+def save_game(cursor, event, day, teams):
     competitions = event.get("competitions") or []
 
     if not competitions:
@@ -218,65 +223,69 @@ def upsert_game(cur, event, day, teams):
 
     home = next(
         (
-            x for x in competitors
-            if x.get("homeAway") == "home"
+            item for item in competitors
+            if item.get("homeAway") == "home"
         ),
         None,
     )
 
     away = next(
         (
-            x for x in competitors
-            if x.get("homeAway") == "away"
+            item for item in competitors
+            if item.get("homeAway") == "away"
         ),
         None,
     )
 
-    if not home or not away:
+    if home is None or away is None:
         return None
 
-    home_id = teams.get(
-        str(
-            (home.get("team") or {}).get(
-                "abbreviation", ""
-            )
-        ).upper()
-    )
+    home_abbr = str(
+        (home.get("team") or {}).get(
+            "abbreviation", ""
+        )
+    ).upper()
 
-    away_id = teams.get(
-        str(
-            (away.get("team") or {}).get(
-                "abbreviation", ""
-            )
-        ).upper()
-    )
+    away_abbr = str(
+        (away.get("team") or {}).get(
+            "abbreviation", ""
+        )
+    ).upper()
+
+    home_id = teams.get(home_abbr)
+    away_id = teams.get(away_abbr)
 
     if home_id is None or away_id is None:
         return None
 
-    game_id = str(event.get("id", ""))
+    game_id = str(event.get("id") or "")
 
     if not game_id:
         return None
 
-    state = (
+    status = (
         (event.get("status") or {}).get("type")
         or {}
     )
 
-    final = (
-        bool(state.get("completed"))
-        or state.get("state") == "post"
+    completed = (
+        status.get("completed") is True
+        or status.get("state") == "post"
     )
 
-    cur.execute(
+    if not completed:
+        return None
+
+    cursor.execute(
         """
         INSERT INTO games
-            (id, game_date, season, home_team_id,
-             away_team_id, home_score, away_score,
+            (id, game_date, season,
+             home_team_id, away_team_id,
+             home_score, away_score,
              status, stats_verified, updated_at)
         VALUES
-            (%s,%s,%s,%s,%s,%s,%s,%s,FALSE,NOW())
+            (%s, %s, %s, %s, %s,
+             %s, %s, 'final', FALSE, NOW())
         ON CONFLICT (id) DO UPDATE SET
             game_date = EXCLUDED.game_date,
             season = EXCLUDED.season,
@@ -284,7 +293,7 @@ def upsert_game(cur, event, day, teams):
             away_team_id = EXCLUDED.away_team_id,
             home_score = EXCLUDED.home_score,
             away_score = EXCLUDED.away_score,
-            status = EXCLUDED.status,
+            status = 'final',
             updated_at = NOW()
         """,
         (
@@ -293,18 +302,18 @@ def upsert_game(cur, event, day, teams):
             SEASON,
             home_id,
             away_id,
-            integer(home.get("score")) if final else None,
-            integer(away.get("score")) if final else None,
-            "final" if final else "scheduled",
+            to_int(home.get("score")),
+            to_int(away.get("score")),
         ),
     )
 
-    return game_id if final else None
+    return game_id
 
 
-def save_boxscore(cur, game_id, teams):
+def save_boxscore(cursor, game_id, teams):
     payload = fetch(
-        "/summary", {"event": game_id}
+        "/summary",
+        {"event": game_id},
     )
 
     if payload is None:
@@ -319,23 +328,24 @@ def save_boxscore(cur, game_id, teams):
         return None
 
     count = 0
+    teams_with_stats = set()
 
     for group in groups:
-        tid = teams.get(
-            str(
-                (group.get("team") or {}).get(
-                    "abbreviation", ""
-                )
-            ).upper()
-        )
+        abbreviation = str(
+            (group.get("team") or {}).get(
+                "abbreviation", ""
+            )
+        ).upper()
 
-        if tid is None:
+        team_id = teams.get(abbreviation)
+
+        if team_id is None:
             continue
 
         for category in group.get("statistics") or []:
             labels = [
-                str(x).upper()
-                for x in (
+                str(label).upper()
+                for label in (
                     category.get("labels")
                     or category.get("names")
                     or []
@@ -346,20 +356,24 @@ def save_boxscore(cur, game_id, teams):
                 if item.get("didNotPlay") is True:
                     continue
 
-                stats = dict(
-                    zip(labels, item.get("stats") or [])
-                )
+                raw_stats = item.get("stats") or []
 
-                if not stats:
+                if not raw_stats:
                     continue
 
+                stats = dict(zip(labels, raw_stats))
+
                 played = (
-                    mins(stats.get("MIN")) > 0
+                    to_minutes(stats.get("MIN")) > 0
                     or any(
-                        integer(stats.get(key)) > 0
+                        to_int(stats.get(key)) > 0
                         for key in (
-                            "PTS", "REB", "AST",
-                            "STL", "BLK", "TO"
+                            "PTS",
+                            "REB",
+                            "AST",
+                            "STL",
+                            "BLK",
+                            "TO",
                         )
                     )
                 )
@@ -368,32 +382,36 @@ def save_boxscore(cur, game_id, teams):
                     continue
 
                 athlete = item.get("athlete") or {}
-                pid = upsert_player(cur, athlete)
 
-                if pid is None:
+                player_id = save_player(
+                    cursor,
+                    athlete,
+                )
+
+                if player_id is None:
                     continue
 
-                three = stats.get(
-                    "3PT",
-                    stats.get(
-                        "3PM-A",
-                        stats.get("3PM", "0"),
-                    ),
+                three_point_stat = (
+                    stats.get("3PT")
+                    or stats.get("3PM-A")
+                    or stats.get("3PM")
+                    or "0"
                 )
 
-                threes_made = integer(
-                    str(three).split("-")[0]
+                threes_made = to_int(
+                    str(three_point_stat).split("-")[0]
                 )
 
-                cur.execute(
+                cursor.execute(
                     """
                     INSERT INTO player_game_stats
                         (game_id, player_id, team_id,
                          minutes, points, rebounds,
-                         assists, threes_made, steals,
-                         blocks, turnovers)
+                         assists, threes_made,
+                         steals, blocks, turnovers)
                     VALUES
-                        (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        (%s, %s, %s, %s, %s, %s,
+                         %s, %s, %s, %s, %s)
                     ON CONFLICT (game_id, player_id)
                     DO UPDATE SET
                         team_id = EXCLUDED.team_id,
@@ -408,23 +426,24 @@ def save_boxscore(cur, game_id, teams):
                     """,
                     (
                         game_id,
-                        pid,
-                        tid,
-                        mins(stats.get("MIN")),
-                        integer(stats.get("PTS")),
-                        integer(stats.get("REB")),
-                        integer(stats.get("AST")),
+                        player_id,
+                        team_id,
+                        to_minutes(stats.get("MIN")),
+                        to_int(stats.get("PTS")),
+                        to_int(stats.get("REB")),
+                        to_int(stats.get("AST")),
                         threes_made,
-                        integer(stats.get("STL")),
-                        integer(stats.get("BLK")),
-                        integer(stats.get("TO")),
+                        to_int(stats.get("STL")),
+                        to_int(stats.get("BLK")),
+                        to_int(stats.get("TO")),
                     ),
                 )
 
                 count += 1
+                teams_with_stats.add(team_id)
 
-    if count >= 10:
-        cur.execute(
+    if count >= 10 and len(teams_with_stats) == 2:
+        cursor.execute(
             """
             UPDATE games
             SET stats_verified = TRUE,
@@ -434,48 +453,58 @@ def save_boxscore(cur, game_id, teams):
             (game_id,),
         )
 
-    return count
+        return count
+
+    return None
 
 
 def main():
-    url = os.environ.get("DATABASE_URL")
+    database_url = os.environ.get("DATABASE_URL")
 
-    if not url:
+    if not database_url:
         raise RuntimeError(
-            "DATABASE_URL is missing"
+            "DATABASE_URL secret is missing."
         )
 
-    end = datetime.now(timezone.utc).date()
+    today = datetime.now(timezone.utc).date()
 
     print(
-        f"BACKFILL VERSION 2026-11-06-v2 "
-        f"| {START} to {end}",
+        "NBA FULL SEASON BACKFILL",
+        f"Season: {SEASON}",
+        f"Dates: {START_DATE} through {today}",
+        sep="\n",
         flush=True,
     )
 
     failed = []
+    games_updated = 0
+    rows_updated = 0
 
     with psycopg.connect(
-        url,
+        database_url,
         connect_timeout=15,
         sslmode="require",
-    ) as conn:
+    ) as connection:
 
-        with conn.cursor() as cur:
-            teams = team_ids(cur)
+        with connection.cursor() as cursor:
+            teams = get_teams(cursor)
 
-            roster_count = sync_rosters(cur, teams)
-            conn.commit()
+            roster_count = sync_rosters(
+                cursor,
+                teams,
+            )
+
+            connection.commit()
 
             print(
-                f"ROSTER PLAYERS UPDATED: {roster_count}",
+                f"Roster entries updated: {roster_count}",
                 flush=True,
             )
 
-            day = START
+            day = START_DATE
 
-            while day <= end:
-                board = fetch(
+            while day <= today:
+                scoreboard = fetch(
                     "/scoreboard",
                     {
                         "dates": day.strftime("%Y%m%d"),
@@ -484,105 +513,110 @@ def main():
                     },
                 )
 
-                if board is None:
-                    failed.append(f"scoreboard {day}")
+                if scoreboard is None:
+                    failed.append(
+                        f"Scoreboard unavailable: {day}"
+                    )
+
                     day += timedelta(days=1)
                     continue
 
-                events = board.get("events") or []
-                saved = 0
+                events = scoreboard.get("events") or []
 
                 for event in events:
+                    game_id = None
+
                     try:
-                        gid = upsert_game(
-                            cur, event, day, teams
+                        game_id = save_game(
+                            cursor,
+                            event,
+                            day,
+                            teams,
                         )
 
-                        if not gid:
-                            conn.commit()
+                        if game_id is None:
+                            connection.commit()
                             continue
 
-                        # Always re-fetch final boxscores.
-                        # Partial games must not be treated
-                        # as fully populated games.
                         count = save_boxscore(
-                            cur, gid, teams
+                            cursor,
+                            game_id,
+                            teams,
                         )
 
-                        if count is None or count < 10:
+                        if count is None:
                             failed.append(
-                                f"boxscore {gid} on {day}"
+                                f"Incomplete boxscore: {game_id}"
                             )
                         else:
-                            saved += count
+                            games_updated += 1
+                            rows_updated += count
 
-                        conn.commit()
+                        connection.commit()
 
-                    except Exception as exc:
-                        conn.rollback()
+                    except Exception as error:
+                        connection.rollback()
 
                         failed.append(
-                            f"game {event.get('id')} "
-                            f"on {day}: {exc}"
+                            f"Game {game_id}: {error}"
                         )
 
                 print(
-                    f"{day}: {len(events)} events; "
-                    f"{saved} player-game rows",
+                    f"{day}: {len(events)} events checked",
                     flush=True,
                 )
 
                 day += timedelta(days=1)
 
-            cur.execute(
+            cursor.execute(
                 "SELECT COUNT(*) FROM players"
             )
-            player_count = cur.fetchone()[0]
+            player_count = cursor.fetchone()[0]
 
-            cur.execute(
+            cursor.execute(
                 "SELECT COUNT(*) FROM player_game_stats"
             )
-            row_count = cur.fetchone()[0]
+            stat_count = cursor.fetchone()[0]
 
-            cur.execute(
+            cursor.execute(
                 """
                 SELECT COUNT(*)
-                FROM games g
-                WHERE g.status = 'final'
-                  AND g.game_date BETWEEN %s AND %s
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM player_game_stats s
-                      WHERE s.game_id = g.id
-                  )
+                FROM games
+                WHERE status = 'final'
+                  AND game_date BETWEEN %s AND %s
+                  AND stats_verified = FALSE
                 """,
-                (START, end),
+                (START_DATE, today),
             )
 
-            empty_games = cur.fetchone()[0]
+            unverified_count = cursor.fetchone()[0]
 
             print(
-                f"DATABASE CHECK: {player_count} players; "
-                f"{row_count} player-game rows; "
-                f"{empty_games} empty final games",
+                "\nDATABASE SUMMARY",
+                f"Players: {player_count}",
+                f"Player-game records: {stat_count}",
+                f"Boxscores updated: {games_updated}",
+                f"Rows processed: {rows_updated}",
+                f"Unverified final games: {unverified_count}",
+                sep="\n",
                 flush=True,
             )
 
     if failed:
         print(
-            "INCOMPLETE REQUESTS:",
+            "\nINCOMPLETE REQUESTS:",
             *failed,
             sep="\n- ",
             flush=True,
         )
 
         raise RuntimeError(
-            f"{len(failed)} requests incomplete; "
-            "rerun to retry"
+            f"{len(failed)} games or requests "
+            "need another backfill attempt."
         )
 
     print(
-        "SEASON BACKFILL COMPLETE",
+        "SEASON BACKFILL FINISHED",
         flush=True,
     )
 
