@@ -402,16 +402,26 @@ def save_boxscore(cursor, game_id, teams):
                     str(three_point_stat).split("-")[0]
                 )
 
+                attempt_parts = str(three_point_stat).split("-", 1)
+                threes_attempted = None
+                if len(attempt_parts) == 2:
+                    try:
+                        threes_attempted = int(attempt_parts[1])
+                    except (ValueError, TypeError):
+                        raise ValueError("Invalid three-point attempts")
+                    if threes_attempted < threes_made:
+                        raise ValueError("Three-point attempts below makes")
+
                 cursor.execute(
                     """
                     INSERT INTO player_game_stats
                         (game_id, player_id, team_id,
                          minutes, points, rebounds,
-                         assists, threes_made,
+                         assists, threes_made, threes_attempted,
                          steals, blocks, turnovers)
                     VALUES
                         (%s, %s, %s, %s, %s, %s,
-                         %s, %s, %s, %s, %s)
+                         %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (game_id, player_id)
                     DO UPDATE SET
                         team_id = EXCLUDED.team_id,
@@ -420,6 +430,7 @@ def save_boxscore(cursor, game_id, teams):
                         rebounds = EXCLUDED.rebounds,
                         assists = EXCLUDED.assists,
                         threes_made = EXCLUDED.threes_made,
+                        threes_attempted = EXCLUDED.threes_attempted,
                         steals = EXCLUDED.steals,
                         blocks = EXCLUDED.blocks,
                         turnovers = EXCLUDED.turnovers
@@ -433,6 +444,7 @@ def save_boxscore(cursor, game_id, teams):
                         to_int(stats.get("REB")),
                         to_int(stats.get("AST")),
                         threes_made,
+                        threes_attempted,
                         to_int(stats.get("STL")),
                         to_int(stats.get("BLK")),
                         to_int(stats.get("TO")),

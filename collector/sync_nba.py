@@ -135,6 +135,12 @@ def minutes_value(value):
         return None
 
 
+def shots_attempted(value):
+    if value is None or "-" not in str(value):
+        return None
+    return safe_int(str(value).split("-", 1)[1])
+
+
 def shots_made(value):
     if value is None:
         return None
@@ -437,6 +443,10 @@ def sync_boxscore(conn, game_id, team_ids):
                     )
                 )
 
+                threes_attempted = shots_attempted(pick(stats, "3PT", "3PM-A", "3P"))
+                if threes_attempted is not None and (threes is None or threes_attempted < threes):
+                    raise ValueError("Invalid three-point made/attempted totals")
+
                 steals = safe_int(
                     pick(
                         stats,
@@ -473,6 +483,7 @@ def sync_boxscore(conn, game_id, team_ids):
                         rebounds,
                         assists,
                         threes,
+                        threes_attempted,
                         steals,
                         blocks,
                         turnovers,
@@ -506,6 +517,7 @@ def sync_boxscore(conn, game_id, team_ids):
                 reb,
                 ast,
                 threes,
+                threes_attempted,
                 steals,
                 blocks,
                 turnovers,
@@ -536,12 +548,12 @@ def sync_boxscore(conn, game_id, team_ids):
                 INSERT INTO player_game_stats (
                     game_id, player_id, team_id,
                     minutes, points, rebounds,
-                    assists, threes_made,
+                    assists, threes_made, threes_attempted,
                     steals, blocks, turnovers
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (game_id, player_id)
                 DO UPDATE SET
@@ -551,6 +563,7 @@ def sync_boxscore(conn, game_id, team_ids):
                     rebounds = EXCLUDED.rebounds,
                     assists = EXCLUDED.assists,
                     threes_made = EXCLUDED.threes_made,
+                    threes_attempted = EXCLUDED.threes_attempted,
                     steals = EXCLUDED.steals,
                     blocks = EXCLUDED.blocks,
                     turnovers = EXCLUDED.turnovers
@@ -564,6 +577,7 @@ def sync_boxscore(conn, game_id, team_ids):
                     reb,
                     ast,
                     threes,
+                    threes_attempted,
                     steals,
                     blocks,
                     turnovers,
