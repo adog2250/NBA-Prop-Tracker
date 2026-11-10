@@ -186,10 +186,50 @@ input{font-size:16px}
 
   const fmt = v => v === null ? "—" : v.toFixed(1);
 
-  const chosen = (player,key) => player.logs.filter(log =>
-    (venue === "All" || log.home === (venue === "Home")) &&
-    val(log,key) !== null
-  ).slice(0,n);
+  function teamCode(value) {
+    const code = String(value || "").toUpperCase();
+
+    return ({
+      GS:"GSW",
+      NY:"NYK",
+      SA:"SAS",
+      NO:"NOP",
+      UTAH:"UTA",
+      WSH:"WAS"
+    })[code] || code;
+  }
+
+  function opponentFor(player) {
+    const matchup = data.games.find(g => String(g.id) === game);
+
+    if (!matchup) return null;
+    if (player.team_id === matchup.home_id) return matchup.away;
+    if (player.team_id === matchup.away_id) return matchup.home;
+
+    return null;
+  }
+
+  function chosen(player,key) {
+    const opponent = opponentFor(player);
+
+    return player.logs.filter(log => {
+      if (val(log,key) === null) return false;
+
+      if (venue === "Head-to-Head") {
+        return (
+          opponent !== null &&
+          teamCode(log.opp) === teamCode(opponent)
+        );
+      }
+
+      return (
+        venue === "All" ||
+        log.home === (venue === "Home")
+      );
+    }).slice().sort(
+      (a,b) => String(b.date).localeCompare(String(a.date))
+    ).slice(0,n);
+  }
 
   const matches = player =>
     player.name.toLowerCase().includes(search.trim().toLowerCase());
@@ -248,6 +288,12 @@ input{font-size:16px}
     `;
   }
 
+  function matchupLabel(log) {
+    return log.away_team && log.home_team
+      ? log.away_team+" @ "+log.home_team
+      : (log.home?"Home vs ":"Away at ")+log.opp;
+  }
+
   function showBox(player,log) {
     const number = v => Number.isFinite(v) ? String(v) : "—";
     const pair = (made,attempted) => number(made)+" / "+number(attempted);
@@ -268,14 +314,10 @@ input{font-size:16px}
       ["Defensive rebounds",number(log.DREB)]
     ];
 
-    const matchup = log.away_team && log.home_team
-      ? log.away_team+" @ "+log.home_team
-      : (log.home?"Home vs ":"Away at ")+log.opp;
-
     q("#box-title").textContent = player.name+" · Box Score";
 
     q("#box-content").innerHTML = identity(player) + `
-      <p class="muted">${esc(log.date)} · ${esc(matchup)}</p>
+      <p class="muted">${esc(log.date)} · ${esc(matchupLabel(log))}</p>
       <table class="box-table">
         <thead>
           <tr>
@@ -312,7 +354,12 @@ input{font-size:16px}
     const games = chosen(player,key).slice().reverse();
 
     if (!games.length) {
-      return '<p class="muted">No saved games for this selection.</p>';
+      return `<p class="muted">${
+        venue === "Head-to-Head"
+          ? "No saved head-to-head games against " +
+            esc(opponentFor(player) || "this opponent") + "."
+          : "No saved games for this selection."
+      }</p>`;
     }
 
     const max = Math.max(
@@ -323,6 +370,7 @@ input{font-size:16px}
 
     const bars = games.map((log,index) => {
       const v = val(log,key);
+
       const attempts = key==="3PM" && Number.isFinite(log["3PA"])
         ? `
           <div style="
@@ -376,6 +424,39 @@ input{font-size:16px}
     `;
   }
 
+  function headToHeadTable(player,games,key) {
+    if (venue !== "Head-to-Head" || !games.length) return "";
+
+    return `
+      <div style="overflow-x:auto">
+        <table class="box-table">
+          <thead>
+            <tr>
+              <th scope="col">Date</th>
+              <th scope="col">Game</th>
+              <th scope="col">${esc(key)}</th>
+              <th scope="col">Box score</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${games.map(log => `
+              <tr>
+                <th scope="row">${esc(log.date)}</th>
+                <td>${esc(matchupLabel(log))}</td>
+                <td>${val(log,key)}</td>
+                <td>
+                  <button data-box="${player.id}:${player.logs.indexOf(log)}">
+                    View
+                  </button>
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
   function detail(player) {
     const key = minutes?"MIN":stat;
     const games = chosen(player,key);
@@ -404,10 +485,21 @@ input{font-size:16px}
         </div>
 
         <div class="row" style="justify-content:flex-end;margin:9px 0">
-          ${["All","Home","Away"].map(v => `
-            <button data-venue="${v}" aria-pressed="${venue===v}">${v}</button>
+          ${["All","Home","Away","Head-to-Head"].map(v => `
+            <button
+              data-venue="${v}"
+              aria-pressed="${venue===v}"
+              ${v==="Head-to-Head"&&!opponentFor(player)?"disabled":""}
+            >${v}</button>
           `).join("")}
         </div>
+
+        ${venue === "Head-to-Head" ? `
+          <p class="muted">
+            Against ${esc(opponentFor(player) || "the selected opponent")}
+            · available saved games only. Season average stays unchanged.
+          </p>
+        ` : ""}
 
         <h3>Performance</h3>
         <div class="row">
@@ -433,6 +525,7 @@ input{font-size:16px}
         </div>
 
         ${chart(player)}
+        ${headToHeadTable(player,games,key)}
 
         <h3>Add to My Picks</h3>
         <div class="actions">
