@@ -1,4 +1,4 @@
-"""ZenStats: backfill saved NBA games and full player box scores."""
+"""ZenStats: backfill NBA games, player bios, and full box scores."""
 
 import json
 import os
@@ -220,16 +220,37 @@ def save_player(cursor, athlete, team_id=None):
             """
             INSERT INTO players (
                 id, full_name, current_team_id,
+                listed_position, listed_height, listed_weight,
                 is_active, updated_at
             )
-            VALUES (%s, %s, %s, TRUE, NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW())
             ON CONFLICT (id) DO UPDATE SET
                 full_name = EXCLUDED.full_name,
                 current_team_id = EXCLUDED.current_team_id,
+                listed_position = COALESCE(
+                    EXCLUDED.listed_position,
+                    players.listed_position
+                ),
+                listed_height = COALESCE(
+                    EXCLUDED.listed_height,
+                    players.listed_height
+                ),
+                listed_weight = COALESCE(
+                    EXCLUDED.listed_weight,
+                    players.listed_weight
+                ),
                 is_active = TRUE,
                 updated_at = NOW()
             """,
-            (player_id, name, team_id),
+            (
+                player_id,
+                name,
+                team_id,
+                (athlete.get("position") or {}).get("abbreviation")
+                or None,
+                athlete.get("displayHeight") or None,
+                athlete.get("displayWeight") or None,
+            ),
         )
 
     return player_id
@@ -573,7 +594,7 @@ def main():
     today = datetime.now(timezone.utc).date()
 
     print(
-        "ZENSTATS FULL BOX-SCORE BACKFILL",
+        "ZENSTATS PLAYER BIOS AND FULL BOX-SCORE BACKFILL",
         f"Season: {SEASON}",
         f"Dates: {START_DATE} through {today}",
         sep="\n",
