@@ -37,12 +37,13 @@ summary::after{content:"⌄";float:right}
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:15px 0}
 .metric{background:#2b374c;border-radius:7px;padding:11px;text-align:center}
 .metric strong{display:block;margin-top:5px}
-.plot{position:relative;height:210px;padding:25px 4px 30px;margin:20px 0 8px}
+.plot{position:relative;height:220px;padding:25px 4px 40px;margin:20px 0 8px}
 .bars{height:100%;display:flex;gap:5px;align-items:end;background:repeating-linear-gradient(to top,transparent 0,transparent 37px,#ffffff15 38px)}
 .column{position:relative;flex:1;height:100%;display:flex;align-items:end;min-width:0}
 .bar{width:100%;position:relative;min-height:2px}
 .number{position:absolute;bottom:100%;left:0;right:0;text-align:center;font-size:11px;font-weight:500}
-.opponent{position:absolute;bottom:-23px;left:0;right:0;text-align:center;font-size:10px;color:#b2bed2}
+.opponent{position:absolute;top:100%;left:0;right:0;padding-top:7px;text-align:center;font-size:10px;color:#b2bed2;line-height:13px}
+.game-date{display:block;font-size:8px;white-space:nowrap;color:#afbdd1}
 .average{position:absolute;left:4px;right:4px;border-top:2px solid white;pointer-events:none}
 .average span{position:absolute;right:0;bottom:0;font-size:11px;background:#1d283b}
 .actions{display:flex;gap:8px}
@@ -134,6 +135,7 @@ input{font-size:16px}
 
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey) || "[]");
+
     if (Array.isArray(saved)) {
       picks = saved.filter(p =>
         Number.isInteger(p.id) &&
@@ -227,7 +229,10 @@ input{font-size:16px}
   function trend(player) {
     const a = avg(player,stat);
     const games = player.logs.filter(g => val(g,stat) !== null).slice(0,n);
-    if (a === null) return '<span class="muted">No saved history</span>';
+
+    if (a === null) {
+      return '<span class="muted">No saved history</span>';
+    }
 
     const above = games.filter(g => val(g,stat) > a+1e-9).length;
     const below = games.filter(g => val(g,stat) < a-1e-9).length;
@@ -293,6 +298,14 @@ input{font-size:16px}
     q("#box-dialog").showModal();
   }
 
+  function gameDate(value) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ""));
+
+    return match
+      ? `${Number(match[2])}/${Number(match[3])}`
+      : "";
+  }
+
   function chart(player) {
     const key = minutes?"MIN":stat;
     const a = avg(player,key);
@@ -338,7 +351,10 @@ input{font-size:16px}
           ">
             <span class="number">${v}</span>
           </div>
-          <span class="opponent">${games.length<=10?esc(log.opp):index+1}</span>
+          <span class="opponent">
+            ${games.length<=10?esc(log.opp):index+1}
+            <span class="game-date">${gameDate(log.date)}</span>
+          </span>
         </div>
       `;
     }).join("");
@@ -346,7 +362,7 @@ input{font-size:16px}
     return `
       <div class="plot" role="group" aria-label="Recent ${esc(key)}. Select a bar for its game box score.">
         <div class="bars">${bars}</div>
-        <div class="average" style="bottom:calc(30px + 155px * ${a/max});">
+        <div class="average" style="bottom:calc(40px + 155px * ${a/max});">
           <span>AVG ${fmt(a)}</span>
         </div>
       </div>
@@ -492,11 +508,19 @@ input{font-size:16px}
       }
 
       if (search.trim()) {
-        const scheduled = new Set(data.games.flatMap(g => [g.home_id,g.away_id]));
-        const others = data.players.filter(p =>
-          matches(p) && avg(p,stat)!==null && !scheduled.has(p.team_id)
+        const scheduled = new Set(
+          data.games.flatMap(g => [g.home_id,g.away_id])
         );
-        if (others.length) html += "<h2>Other Players</h2>"+others.map(detail).join("");
+
+        const others = data.players.filter(p =>
+          matches(p) &&
+          avg(p,stat)!==null &&
+          !scheduled.has(p.team_id)
+        );
+
+        if (others.length) {
+          html += "<h2>Other Players</h2>"+others.map(detail).join("");
+        }
       }
 
       if (!data.games.length && !search.trim()) {
@@ -522,6 +546,7 @@ input{font-size:16px}
     }
 
     q("#content").innerHTML = html;
+
     if (open!==undefined) {
       const section = q(`[data-player="${open}"]`);
       if (section) section.open=true;
@@ -538,7 +563,11 @@ input{font-size:16px}
     if (action.box) {
       const [id,index] = action.box.split(":").map(Number);
       const player = data.players.find(p => p.id===id);
-      if (player && player.logs[index]) showBox(player,player.logs[index]);
+
+      if (player && player.logs[index]) {
+        showBox(player,player.logs[index]);
+      }
+
       return;
     }
 
@@ -619,18 +648,25 @@ input{font-size:16px}
     try {
       const response = await fetch("/api/dashboard",{cache:"no-store"});
       const result = await response.json();
+
       if (!response.ok) throw Error(result.error);
 
       data=result;
+
       q("#status").textContent =
         `${result.date} · ${result.season} · Saved game statistics` +
-        (result.updated_at?" · Data updated "+new Date(result.updated_at).toLocaleString():"");
+        (
+          result.updated_at
+            ? " · Data updated "+new Date(result.updated_at).toLocaleString()
+            : ""
+        );
 
       render();
     } catch (error) {
       q("#status").textContent = navigator.onLine
         ? "Saved NBA data could not load. Reload to try again."
         : "Offline · Reconnect to load current NBA stats.";
+
       render();
     }
   }
