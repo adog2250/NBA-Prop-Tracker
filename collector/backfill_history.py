@@ -1,4 +1,4 @@
-"""Import one month of prior-season regular-season box scores."""
+"""Import prior-season box scores, skipping unfinished games."""
 
 import argparse
 import calendar
@@ -66,6 +66,7 @@ def main():
 
     failed = []
     imported = 0
+    skipped = 0
 
     with psycopg.connect(
         os.environ["DATABASE_URL"],
@@ -106,8 +107,51 @@ def main():
                         continue
 
                     game_id = str(
-                        event.get("id") or "unknown"
+                        event.get("id") or ""
                     )
+
+                    if not game_id:
+                        continue
+
+                    status = (
+                        (event.get("status") or {}).get("type")
+                        or {}
+                    )
+
+                    # "post" can also mean postponed.
+                    # Require an explicitly completed game.
+                    if status.get("completed") is not True:
+                        skipped += 1
+
+                        name = str(
+                            status.get("name") or ""
+                        ).upper()
+
+                        corrected_status = {
+                            "STATUS_POSTPONED": "postponed",
+                            "STATUS_CANCELED": "canceled",
+                            "STATUS_CANCELLED": "canceled",
+                        }.get(name)
+
+                        if corrected_status:
+                            cursor.execute(
+                                """
+                                UPDATE games
+                                SET status = %s,
+                                    stats_verified = FALSE,
+                                    updated_at = NOW()
+                                WHERE id = %s
+                                  AND status = 'final'
+                                """,
+                                (
+                                    corrected_status,
+                                    game_id,
+                                ),
+                            )
+
+                            connection.commit()
+
+                        continue
 
                     try:
                         saved_id = source.save_game(
@@ -154,6 +198,8 @@ def main():
     print(
         f"{source.SEASON}, month {args.month}: "
         f"{imported} games imported",
+        f"Unfinished or postponed events skipped: {skipped}",
+        sep="\n",
         flush=True,
     )
 
