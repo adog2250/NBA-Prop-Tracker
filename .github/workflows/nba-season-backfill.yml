@@ -1,4 +1,3 @@
-
 name: NBA Full Season Backfill
 
 on:
@@ -15,7 +14,7 @@ concurrency:
 
 jobs:
   backfill:
-    name: Backfill all NBA season games
+    name: Backfill NBA stats and player positions
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -33,21 +32,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "psycopg[binary]==3.2.10"
 
-      - name: Find and run NBA season backfill
+      - name: Update rosters and full box scores
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        shell: bash
-        run: |
-          echo "Searching for backfill_season.py..."
+        run: python collector/backfill_season.py
 
-          SCRIPT="$(find . -type f -name 'backfill_season.py' -not -path './.git/*' -print -quit)"
-
-          if [ -z "$SCRIPT" ]; then
-            echo "::error::backfill_season.py was not found anywhere in the repository."
-            echo "Repository files:"
-            find . -maxdepth 5 -type f | sort
-            exit 1
-          fi
-
-          echo "Found script: $SCRIPT"
-          python "$SCRIPT"
+      - name: Update specific player positions
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python collector/sync_positions.py
