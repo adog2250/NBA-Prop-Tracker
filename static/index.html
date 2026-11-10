@@ -52,63 +52,56 @@ summary::after{content:"⌄";float:right}
 #search{width:100%;border-radius:8px;margin-top:14px}
 #nav{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}
 #nav button{white-space:nowrap;flex-shrink:0}
-
+.box-hit{position:absolute;inset:0;width:100%;height:100%;padding:0;border:0;border-radius:0;background:transparent;z-index:2;min-height:0}
+.box-hit:focus-visible{outline:2px solid #fff;outline-offset:2px}
+#box-dialog{background:#1d283b;color:#f4f5fb;border:1px solid #3c4b63;border-radius:12px;width:min(94vw,520px);max-height:85dvh;overflow:auto;padding:16px}
+#box-dialog::backdrop{background:#000b}
+.box-table{width:100%;border-collapse:collapse;margin-top:12px}
+.box-table th,.box-table td{text-align:left;padding:8px;border-bottom:1px solid #ffffff20}
+.box-table td{text-align:right;font-variant-numeric:tabular-nums}
 @media(max-width:480px){
-  main{padding-left:12px;padding-right:12px}
-  .tile{padding:9px}
-  .identity{flex-wrap:wrap}
-  .bars{gap:3px}
+main{padding-left:12px;padding-right:12px}
+.tile{padding:9px}
+.identity{flex-wrap:wrap}
+.bars{gap:3px}
 }
-
 @media(pointer:coarse){
-  button,summary{min-height:44px}
-  input{font-size:16px}
+button,summary{min-height:44px}
+.box-hit{min-height:0}
+input{font-size:16px}
 }
 </style>
 </head>
 
 <body>
 <main>
-  <header>
-    <strong><span class="green">▥</span> ZenStats</strong>
-    <button id="picks">My Picks (0)</button>
-  </header>
+<header>
+  <strong><span class="green">▥</span> ZenStats</strong>
+  <button id="picks">My Picks (0)</button>
+</header>
 
-  <h2>Today's Games</h2>
+<h2>Today's Games</h2>
+<p id="status" class="muted" role="status">Loading saved NBA data…</p>
+<nav id="nav" class="row" aria-label="Games"></nav>
+<input id="search" type="search" placeholder="Search players…" aria-label="Search players">
+<p id="save-status" class="muted" role="status" hidden></p>
+<div id="content"></div>
 
-  <p id="status" class="muted" role="status">
-    Loading saved NBA data…
-  </p>
-
-  <nav id="nav" class="row" aria-label="Games"></nav>
-
-  <input
-    id="search"
-    type="search"
-    placeholder="Search players…"
-    aria-label="Search players"
-  >
-
-  <p id="save-status" class="muted" role="status" hidden></p>
-
-  <div id="content"></div>
+<dialog id="box-dialog" aria-labelledby="box-title">
+  <div class="row" style="justify-content:space-between">
+    <h2 id="box-title">Player box score</h2>
+    <button data-close-box>Close</button>
+  </div>
+  <div id="box-content"></div>
+</dialog>
 </main>
 
 <script>
 (() => {
   const q = selector => document.querySelector(selector);
+  const cats = ["PTS","REB","AST","3PM","PR","PA","RA","PRA","STL","BLK"];
 
-  const cats = [
-    "PTS", "REB", "AST", "3PM",
-    "PR", "PA", "RA", "PRA",
-    "STL", "BLK"
-  ];
-
-  let data = {
-    players: [],
-    games: []
-  };
-
+  let data = {players:[],games:[]};
   let game = "all";
   let team = "All";
   let stat = "PTS";
@@ -123,35 +116,31 @@ summary::after{content:"⌄";float:right}
 
   const esc = value => String(value ?? "").replace(
     /[&<>"']/g,
-    character => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;"
-    }[character])
+    c => ({
+      "&":"&amp;",
+      "<":"&lt;",
+      ">":"&gt;",
+      '"':"&quot;",
+      "'":"&#39;"
+    }[c])
   );
 
   function storageMessage() {
     q("#save-status").hidden = false;
-
     q("#save-status").textContent =
       "Picks could not be saved on this device. " +
       "They will last for this session only.";
   }
 
   try {
-    const saved = JSON.parse(
-      localStorage.getItem(storageKey) || "[]"
-    );
-
+    const saved = JSON.parse(localStorage.getItem(storageKey) || "[]");
     if (Array.isArray(saved)) {
-      picks = saved.filter(pick =>
-        Number.isInteger(pick.id) &&
-        typeof pick.name === "string" &&
-        cats.includes(pick.stat) &&
-        ["Over", "Under"].includes(pick.side) &&
-        Number.isFinite(pick.average)
+      picks = saved.filter(p =>
+        Number.isInteger(p.id) &&
+        typeof p.name === "string" &&
+        cats.includes(p.stat) &&
+        ["Over","Under"].includes(p.side) &&
+        Number.isFinite(p.average)
       );
     }
   } catch (error) {
@@ -160,79 +149,52 @@ summary::after{content:"⌄";float:right}
 
   function save() {
     try {
-      localStorage.setItem(
-        storageKey,
-        JSON.stringify(picks)
-      );
+      localStorage.setItem(storageKey,JSON.stringify(picks));
     } catch (error) {
       storageMessage();
     }
   }
 
-  function val(gameLog, key) {
+  function val(log,key) {
     const combinations = {
-      PR: ["PTS", "REB"],
-      PA: ["PTS", "AST"],
-      RA: ["REB", "AST"],
-      PRA: ["PTS", "REB", "AST"]
+      PR:["PTS","REB"],
+      PA:["PTS","AST"],
+      RA:["REB","AST"],
+      PRA:["PTS","REB","AST"]
     };
 
-    const keys = combinations[key] || [key];
+    const fields = combinations[key] || [key];
 
-    if (!keys.every(field =>
-      typeof gameLog[field] === "number" &&
-      Number.isFinite(gameLog[field])
-    )) {
-      return null;
-    }
-
-    return keys.reduce(
-      (total, field) => total + gameLog[field],
-      0
-    );
+    return fields.every(f =>
+      typeof log[f] === "number" && Number.isFinite(log[f])
+    )
+      ? fields.reduce((sum,f) => sum + log[f],0)
+      : null;
   }
 
-  function avg(player, key) {
+  function avg(player,key) {
     const values = player.logs
-      .map(log => val(log, key))
-      .filter(value => value !== null);
+      .map(log => val(log,key))
+      .filter(v => v !== null);
 
-    if (!values.length) {
-      return null;
-    }
-
-    return values.reduce(
-      (total, value) => total + value,
-      0
-    ) / values.length;
+    return values.length
+      ? values.reduce((a,b) => a+b,0)/values.length
+      : null;
   }
 
-  const fmt = value =>
-    value === null ? "—" : value.toFixed(1);
+  const fmt = v => v === null ? "—" : v.toFixed(1);
 
-  function chosen(player, key) {
-    return player.logs
-      .filter(log =>
-        (
-          venue === "All" ||
-          log.home === (venue === "Home")
-        ) &&
-        val(log, key) !== null
-      )
-      .slice(0, n);
-  }
+  const chosen = (player,key) => player.logs.filter(log =>
+    (venue === "All" || log.home === (venue === "Home")) &&
+    val(log,key) !== null
+  ).slice(0,n);
 
   const matches = player =>
-    player.name.toLowerCase().includes(
-      search.trim().toLowerCase()
-    );
+    player.name.toLowerCase().includes(search.trim().toLowerCase());
 
-  const selected = (id, side) =>
-    picks.some(pick =>
-      pick.id === id &&
-      pick.stat === stat &&
-      pick.side === side
-    );
+  const selected = (id,side) => picks.some(p =>
+    p.id === id && p.stat === stat && p.side === side
+  );
 
   function identity(player) {
     const url = player.id < 0
@@ -241,14 +203,9 @@ summary::after{content:"⌄";float:right}
 
     return `
       <span class="identity">
-        <img
-          src="${url}"
-          alt="${esc(player.name)}"
-          loading="lazy"
-        >
+        <img src="${url}" alt="${esc(player.name)}" loading="lazy">
         <span>
-          <span class="muted">${esc(player.team)}</span>
-          <br>
+          <span class="muted">${esc(player.team)}</span><br>
           <strong>${esc(player.name)}</strong>
         </span>
       </span>
@@ -256,245 +213,191 @@ summary::after{content:"⌄";float:right}
   }
 
   function trend(player) {
-    const average = avg(player, stat);
+    const a = avg(player,stat);
+    const games = player.logs.filter(g => val(g,stat) !== null).slice(0,n);
+    if (a === null) return '<span class="muted">No saved history</span>';
 
-    const games = player.logs
-      .filter(log => val(log, stat) !== null)
-      .slice(0, n);
-
-    const above = games.filter(
-      log => val(log, stat) > average + 1e-9
-    ).length;
-
-    const below = games.filter(
-      log => val(log, stat) < average - 1e-9
-    ).length;
-
-    if (average === null) {
-      return '<span class="muted">No saved history</span>';
-    }
+    const above = games.filter(g => val(g,stat) > a+1e-9).length;
+    const below = games.filter(g => val(g,stat) < a-1e-9).length;
 
     if (above === below) {
-      return `
-        <span class="muted">
-          Above / Below tied ·
-          ${above}/${games.length} each
-        </span>
-      `;
+      return `<span class="muted">Above / Below tied · ${above}/${games.length} each</span>`;
     }
 
     return `
-      <span class="${above > below ? "green" : "red"}">
-        ${above > below ? "Above" : "Below"}
-        ${Math.max(above, below)}/${games.length}
+      <span class="${above>below?"green":"red"}">
+        ${above>below?"Above":"Below"} ${Math.max(above,below)}/${games.length}
       </span>
     `;
   }
 
-  function chart(player) {
-    const key = minutes ? "MIN" : stat;
-    const average = avg(player, key);
+  function showBox(player,log) {
+    const number = v => Number.isFinite(v) ? String(v) : "—";
+    const pair = (made,attempted) => number(made)+" / "+number(attempted);
 
-    const games = chosen(player, key)
-      .slice()
-      .reverse();
+    const rows = [
+      ["Minutes",Number.isFinite(log.MIN)?log.MIN.toFixed(1):"—"],
+      ["Points",number(log.PTS)],
+      ["Rebounds",number(log.REB)],
+      ["Assists",number(log.AST)],
+      ["3PT made / attempted",pair(log["3PM"],log["3PA"])],
+      ["Steals",number(log.STL)],
+      ["Blocks",number(log.BLK)],
+      ["Turnovers",number(log.TOV)],
+      ["FG made / attempted",pair(log.FGM,log.FGA)],
+      ["FT made / attempted",pair(log.FTM,log.FTA)],
+      ["Personal fouls",number(log.PF)],
+      ["Offensive rebounds",number(log.OREB)],
+      ["Defensive rebounds",number(log.DREB)]
+    ];
+
+    const matchup = log.away_team && log.home_team
+      ? log.away_team+" @ "+log.home_team
+      : (log.home?"Home vs ":"Away at ")+log.opp;
+
+    q("#box-title").textContent = player.name+" · Box Score";
+
+    q("#box-content").innerHTML = identity(player) + `
+      <p class="muted">${esc(log.date)} · ${esc(matchup)}</p>
+      <table class="box-table">
+        <thead>
+          <tr>
+            <th scope="col">Stat</th>
+            <th scope="col" style="text-align:right">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(([label,value]) => `
+            <tr>
+              <th scope="row">${label}</th>
+              <td>${value}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      <p class="muted">— means unavailable in the saved data.</p>
+    `;
+
+    q("#box-dialog").showModal();
+  }
+
+  function chart(player) {
+    const key = minutes?"MIN":stat;
+    const a = avg(player,key);
+    const games = chosen(player,key).slice().reverse();
 
     if (!games.length) {
-      return `
-        <p class="muted">
-          No saved games for this selection.
-        </p>
-      `;
+      return '<p class="muted">No saved games for this selection.</p>';
     }
 
-    const maximum = Math.max(
-      1,
-      average,
-      ...games.map(log =>
-        key === "3PM"
-          ? Math.max(log["3PA"] ?? 0, log[key])
-          : val(log, key)
+    const max = Math.max(
+      1,a,...games.map(g =>
+        key==="3PM"?Math.max(g["3PA"]??0,g[key]):val(g,key)
       )
-    ) * 1.2;
+    )*1.2;
 
-    const bars = games.map((log, index) => {
-      const value = val(log, key);
+    const bars = games.map((log,index) => {
+      const v = val(log,key);
+      const attempts = key==="3PM" && Number.isFinite(log["3PA"])
+        ? `
+          <div style="
+            position:absolute;bottom:0;width:100%;
+            height:${100*log["3PA"]/max}%;background:#596982;
+          ">
+            <span class="number" style="color:#bbc8dd">${log["3PA"]}</span>
+          </div>
+        `
+        : "";
 
-      const attemptsBar =
-        key === "3PM" &&
-        Number.isFinite(log["3PA"])
-          ? `
-            <div style="
-              position:absolute;
-              bottom:0;
-              width:100%;
-              height:${100 * log["3PA"] / maximum}%;
-              background:#596982;
-            ">
-              <span
-                class="number"
-                style="color:#bbc8dd"
-              >
-                ${log["3PA"]}
-              </span>
-            </div>
-          `
-          : "";
-
-      const color = value > average + 1e-9
-        ? "#97ff42"
-        : value < average - 1e-9
-          ? "#ff667e"
-          : "#efd16a";
+      const color = v>a+1e-9?"#97ff42":v<a-1e-9?"#ff667e":"#efd16a";
 
       return `
         <div class="column">
-          ${attemptsBar}
-
-          <div
-            class="bar"
-            style="
-              height:${100 * value / maximum}%;
-              ${key === "3PM"
-                ? "width:62%;margin:auto auto 0;"
-                : ""}
-              background:${color};
-            "
-          >
-            <span class="number">${value}</span>
+          <button
+            class="box-hit"
+            data-box="${player.id}:${player.logs.indexOf(log)}"
+            aria-label="${esc(player.name)} game box score, ${esc(log.date)}, ${esc(log.opp)}, ${v} ${esc(key)}"
+          ></button>
+          ${attempts}
+          <div class="bar" style="
+            height:${100*v/max}%;
+            ${key==="3PM"?"width:62%;margin:auto auto 0;":""}
+            background:${color};
+          ">
+            <span class="number">${v}</span>
           </div>
-
-          <span class="opponent">
-            ${games.length <= 10
-              ? esc(log.opp)
-              : index + 1}
-          </span>
+          <span class="opponent">${games.length<=10?esc(log.opp):index+1}</span>
         </div>
       `;
     }).join("");
 
-    const missingAttempts =
-      key === "3PM" &&
-      games.some(log => log["3PA"] === null);
-
     return `
-      <div
-        class="plot"
-        role="img"
-        aria-label="Recent ${esc(key)} compared with season average"
-      >
+      <div class="plot" role="group" aria-label="Recent ${esc(key)}. Select a bar for its game box score.">
         <div class="bars">${bars}</div>
-
-        <div
-          class="average"
-          style="bottom:calc(30px + 155px * ${average / maximum});"
-        >
-          <span>AVG ${fmt(average)}</span>
+        <div class="average" style="bottom:calc(30px + 155px * ${a/max});">
+          <span>AVG ${fmt(a)}</span>
         </div>
       </div>
-
       <p class="muted">
-        ${key === "3PM"
-          ? "Muted background: attempted · Colored bar: made<br>"
-          : ""}
-        Green: above · Red: below ·
-        Yellow: equal · White: season average
+        ${key==="3PM"?"Muted background: attempted · Colored bar: made<br>":""}
+        Green: above · Red: below · Yellow: equal · White: season average
       </p>
-
-      ${missingAttempts
-        ? `
-          <p class="muted">
-            Attempts unavailable for some games;
-            no attempts bar is shown for those games.
-          </p>
-        `
+      ${key==="3PM" && games.some(g => g["3PA"]===null)
+        ? '<p class="muted">Attempts unavailable for some games; no attempts bar is shown for those games.</p>'
         : ""}
     `;
   }
 
   function detail(player) {
-    const key = minutes ? "MIN" : stat;
-    const games = chosen(player, key);
-    const average = avg(player, stat);
-
-    const recentAverage = games.length
-      ? fmt(
-          games.reduce(
-            (total, log) => total + val(log, key),
-            0
-          ) / games.length
-        )
+    const key = minutes?"MIN":stat;
+    const games = chosen(player,key);
+    const a = avg(player,stat);
+    const recent = games.length
+      ? fmt(games.reduce((s,g) => s+val(g,key),0)/games.length)
       : "—";
 
     return `
       <details data-player="${player.id}">
         <summary>
           ${identity(player)}
-
           <span class="muted">
-            PTS ${fmt(avg(player, "PTS"))} ·
-            REB ${fmt(avg(player, "REB"))} ·
-            AST ${fmt(avg(player, "AST"))}
+            PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} · AST ${fmt(avg(player,"AST"))}
           </span>
         </summary>
 
         <div class="row" style="margin-top:12px">
-          ${cats.map(category => `
-            <button
-              data-stat="${category}"
-              aria-pressed="${stat === category}"
-            >
-              ${category}
-            </button>
+          ${cats.map(k => `
+            <button data-stat="${k}" aria-pressed="${stat===k}">${k}</button>
           `).join("")}
         </div>
 
         <div style="text-align:right;margin:9px 0">
-          <button data-minutes>
-            ${minutes ? "Stat Graph" : "Minutes Graph"}
-          </button>
+          <button data-minutes>${minutes?"Stat Graph":"Minutes Graph"}</button>
         </div>
 
-        <div
-          class="row"
-          style="justify-content:flex-end;margin:9px 0"
-        >
-          ${["All", "Home", "Away"].map(location => `
-            <button
-              data-venue="${location}"
-              aria-pressed="${venue === location}"
-            >
-              ${location}
-            </button>
+        <div class="row" style="justify-content:flex-end;margin:9px 0">
+          ${["All","Home","Away"].map(v => `
+            <button data-venue="${v}" aria-pressed="${venue===v}">${v}</button>
           `).join("")}
         </div>
 
         <h3>Performance</h3>
-
         <div class="row">
           <span class="muted">Last</span>
-
-          ${[5, 10, 20].map(window => `
-            <button
-              data-window="${window}"
-              aria-pressed="${n === window}"
-            >
-              ${window}
-            </button>
+          ${[5,10,20].map(v => `
+            <button data-window="${v}" aria-pressed="${n===v}">${v}</button>
           `).join("")}
         </div>
 
         <div class="metrics">
           <div class="metric">
             <span class="muted">Season average</span>
-            <strong>${fmt(avg(player, key))}</strong>
+            <strong>${fmt(avg(player,key))}</strong>
           </div>
-
           <div class="metric">
             <span class="muted">Last ${n} average</span>
-            <strong>${recentAverage}</strong>
+            <strong>${recent}</strong>
           </div>
-
           <div class="metric">
             <span class="muted">Games</span>
             <strong>${games.length}</strong>
@@ -504,16 +407,13 @@ summary::after{content:"⌄";float:right}
         ${chart(player)}
 
         <h3>Add to My Picks</h3>
-
         <div class="actions">
-          ${["Over", "Under"].map(side => `
+          ${["Over","Under"].map(side => `
             <button
               data-pick="${player.id}:${side}"
-              aria-pressed="${selected(player.id, side)}"
-              ${average === null ? "disabled" : ""}
-            >
-              ${selected(player.id, side) ? "✓ " : ""}${side}
-            </button>
+              aria-pressed="${selected(player.id,side)}"
+              ${a===null?"disabled":""}
+            >${selected(player.id,side)?"✓ ":""}${side}</button>
           `).join("")}
         </div>
       </details>
@@ -522,94 +422,55 @@ summary::after{content:"⌄";float:right}
 
   function render(open) {
     q("#nav").innerHTML = `
-      <button
-        data-game="all"
-        aria-pressed="${game === "all" && !myPicks}"
-      >
-        All Games
-      </button>
-    ` + data.games.map(matchup => `
-      <button
-        data-game="${esc(matchup.id)}"
-        aria-pressed="${game === String(matchup.id) && !myPicks}"
-      >
-        ${esc(matchup.away)} @ ${esc(matchup.home)}
+      <button data-game="all" aria-pressed="${game==="all"&&!myPicks}">All Games</button>
+    ` + data.games.map(g => `
+      <button data-game="${esc(g.id)}" aria-pressed="${game===String(g.id)&&!myPicks}">
+        ${esc(g.away)} @ ${esc(g.home)}
       </button>
     `).join("");
 
-    q("#picks").textContent =
-      `${myPicks ? "← Back · " : ""}` +
-      `My Picks (${picks.length})`;
-
+    q("#picks").textContent = `${myPicks?"← Back · ":""}My Picks (${picks.length})`;
     q("#search").hidden = myPicks;
 
     let html = "";
 
     if (myPicks) {
-      html = "<h2>My Picks</h2>";
-
-      html += picks.length
-        ? picks.map((pick, index) => `
-          <div class="group">
-            ${identity(pick)}
-
-            <p>
-              ${pick.side} season ${pick.stat}
-              average · ${fmt(pick.average)}
-            </p>
-
-            <button data-remove="${index}">
-              Remove
-            </button>
-          </div>
-        `).join("")
-        : '<p class="muted">No picks saved.</p>';
-
-    } else if (game === "all") {
+      html = "<h2>My Picks</h2>" + (
+        picks.length
+          ? picks.map((p,i) => `
+            <div class="group">
+              ${identity(p)}
+              <p>${p.side} season ${p.stat} average · ${fmt(p.average)}</p>
+              <button data-remove="${i}">Remove</button>
+            </div>
+          `).join("")
+          : '<p class="muted">No picks saved.</p>'
+      );
+    } else if (game==="all") {
       html = `
-        <div
-          class="row"
-          style="justify-content:space-between"
-        >
+        <div class="row" style="justify-content:space-between">
           <h2>Above & Below Season Average</h2>
           <span class="muted">Last ${n} · ${stat}</span>
         </div>
       `;
 
-      for (const matchup of data.games) {
-        const shown = [
-          matchup.away_id,
-          matchup.home_id
-        ].flatMap(teamId =>
-          data.players.filter(player =>
-            player.team_id === teamId &&
-            matches(player) &&
-            avg(player, stat) !== null
-          ).slice(0, 2)
+      for (const g of data.games) {
+        const shown = [g.away_id,g.home_id].flatMap(id =>
+          data.players.filter(p =>
+            p.team_id===id && matches(p) && avg(p,stat)!==null
+          ).slice(0,2)
         );
 
         if (shown.length) {
           html += `
             <section class="group">
-              <h3>
-                ${esc(matchup.away)} @ ${esc(matchup.home)}
-              </h3>
-
+              <h3>${esc(g.away)} @ ${esc(g.home)}</h3>
               <div class="grid">
-                ${shown.map(player => `
-                  <button
-                    class="tile"
-                    data-open="${player.id}"
-                    data-match="${esc(matchup.id)}"
-                  >
-                    ${identity(player)}
-
-                    <p class="muted">
-                      Season ${stat} avg ·
-                      ${fmt(avg(player, stat))}
-                    </p>
-
-                    <strong>${trend(player)}</strong>
+                ${shown.map(p => `
+                  <button class="tile" data-open="${p.id}" data-match="${esc(g.id)}">
+                    ${identity(p)}
+                    <p class="muted">Season ${stat} avg · ${fmt(avg(p,stat))}</p>
+                    <strong>${trend(p)}</strong>
                   </button>
                 `).join("")}
               </div>
@@ -619,217 +480,142 @@ summary::after{content:"⌄";float:right}
       }
 
       if (search.trim()) {
-        const scheduled = new Set(
-          data.games.flatMap(matchup => [
-            matchup.home_id,
-            matchup.away_id
-          ])
+        const scheduled = new Set(data.games.flatMap(g => [g.home_id,g.away_id]));
+        const others = data.players.filter(p =>
+          matches(p) && avg(p,stat)!==null && !scheduled.has(p.team_id)
         );
-
-        const others = data.players.filter(player =>
-          matches(player) &&
-          avg(player, stat) !== null &&
-          !scheduled.has(player.team_id)
-        );
-
-        if (others.length) {
-          html += "<h2>Other Players</h2>";
-          html += others.map(detail).join("");
-        }
+        if (others.length) html += "<h2>Other Players</h2>"+others.map(detail).join("");
       }
 
       if (!data.games.length && !search.trim()) {
-        html += `
-          <p class="muted">
-            No games are saved for today.
-            Search a player to view their saved history.
-          </p>
-        `;
+        html += '<p class="muted">No games are saved for today. Search a player to view their saved history.</p>';
       }
-
     } else {
-      const matchup = data.games.find(
-        item => String(item.id) === game
-      );
+      const g = data.games.find(g => String(g.id)===game);
 
-      if (matchup) {
+      if (g) {
         html = `
-          <h2>
-            ${esc(matchup.away)} @ ${esc(matchup.home)}
-          </h2>
-
+          <h2>${esc(g.away)} @ ${esc(g.home)}</h2>
           <div class="row">
-            ${[
-              "All",
-              matchup.away,
-              matchup.home
-            ].map(teamName => `
-              <button
-                data-team="${esc(teamName)}"
-                aria-pressed="${teamName === team}"
-              >
-                ${esc(teamName)}
-              </button>
+            ${["All",g.away,g.home].map(t => `
+              <button data-team="${esc(t)}" aria-pressed="${t===team}">${esc(t)}</button>
             `).join("")}
           </div>
-        `;
-
-        html += data.players.filter(player =>
-          [
-            matchup.home_id,
-            matchup.away_id
-          ].includes(player.team_id) &&
-          (
-            team === "All" ||
-            player.team === team
-          ) &&
-          matches(player)
+        ` + data.players.filter(p =>
+          [g.home_id,g.away_id].includes(p.team_id) &&
+          (team==="All" || p.team===team) &&
+          matches(p)
         ).map(detail).join("");
       }
     }
 
     q("#content").innerHTML = html;
-
-    if (open !== undefined) {
-      const playerSection = q(
-        `[data-player="${open}"]`
-      );
-
-      if (playerSection) {
-        playerSection.open = true;
-      }
+    if (open!==undefined) {
+      const section = q(`[data-player="${open}"]`);
+      if (section) section.open=true;
     }
   }
 
-  q("main").addEventListener("click", event => {
+  q("main").addEventListener("click",event => {
     const button = event.target.closest("button");
+    if (!button) return;
 
-    if (!button) {
+    const action = button.dataset;
+    const open = button.closest("[data-player]")?.dataset.player;
+
+    if (action.box) {
+      const [id,index] = action.box.split(":").map(Number);
+      const player = data.players.find(p => p.id===id);
+      if (player && player.logs[index]) showBox(player,player.logs[index]);
       return;
     }
 
-    const action = button.dataset;
+    if ("closeBox" in action) {
+      q("#box-dialog").close();
+      return;
+    }
 
-    const open = button.closest(
-      "[data-player]"
-    )?.dataset.player;
-
-    if (button.id === "picks") {
-      myPicks = !myPicks;
+    if (button.id==="picks") {
+      myPicks=!myPicks;
       render();
-
     } else if (action.game) {
-      game = action.game;
-      team = "All";
-      venue = "All";
-      myPicks = false;
+      game=action.game;
+      team="All";
+      venue="All";
+      myPicks=false;
       render();
-
     } else if (action.open) {
-      game = action.match;
-      team = "All";
+      game=action.match;
+      team="All";
       render(action.open);
-
     } else if (action.team) {
-      team = action.team;
+      team=action.team;
       render();
-
     } else if (action.stat) {
-      stat = action.stat;
+      stat=action.stat;
       render(open);
-
     } else if (action.window) {
-      n = Number(action.window);
+      n=Number(action.window);
       render(open);
-
     } else if ("minutes" in action) {
-      minutes = !minutes;
+      minutes=!minutes;
       render(open);
-
     } else if (action.venue) {
-      venue = action.venue;
+      venue=action.venue;
       render(open);
-
     } else if (action.pick) {
-      const [id, side] = action.pick.split(":");
+      const [id,side] = action.pick.split(":");
+      const player = data.players.find(p => p.id===Number(id));
+      if (!player) return;
 
-      const player = data.players.find(
-        item => item.id === Number(id)
+      const existing = picks.findIndex(p =>
+        p.id===Number(id) && p.stat===stat && p.side===side
       );
 
-      if (!player) {
-        return;
-      }
-
-      const existing = picks.findIndex(pick =>
-        pick.id === Number(id) &&
-        pick.stat === stat &&
-        pick.side === side
-      );
-
-      if (existing < 0) {
+      if (existing<0) {
         picks.push({
-          id: player.id,
-          name: player.name,
-          team: player.team,
+          id:player.id,
+          name:player.name,
+          team:player.team,
           stat,
           side,
-          average: avg(player, stat),
-          saved_at: new Date().toISOString()
+          average:avg(player,stat),
+          saved_at:new Date().toISOString()
         });
       } else {
-        picks.splice(existing, 1);
+        picks.splice(existing,1);
       }
 
       save();
       render(open);
-
-    } else if (action.remove !== undefined) {
-      picks.splice(Number(action.remove), 1);
+    } else if (action.remove!==undefined) {
+      picks.splice(Number(action.remove),1);
       save();
       render();
     }
   });
 
-  q("#search").addEventListener("input", event => {
-    search = event.target.value;
+  q("#search").addEventListener("input",event => {
+    search=event.target.value;
     render();
   });
 
   async function load() {
     try {
-      const response = await fetch(
-        "/api/dashboard",
-        { cache: "no-store" }
-      );
-
+      const response = await fetch("/api/dashboard",{cache:"no-store"});
       const result = await response.json();
+      if (!response.ok) throw Error(result.error);
 
-      if (!response.ok) {
-        throw Error(result.error);
-      }
-
-      data = result;
-
+      data=result;
       q("#status").textContent =
-        `${result.date} · ${result.season} · ` +
-        "Saved game statistics" +
-        (
-          result.updated_at
-            ? (
-                " · Data updated " +
-                new Date(result.updated_at).toLocaleString()
-              )
-            : ""
-        );
+        `${result.date} · ${result.season} · Saved game statistics` +
+        (result.updated_at?" · Data updated "+new Date(result.updated_at).toLocaleString():"");
 
       render();
-
     } catch (error) {
       q("#status").textContent = navigator.onLine
         ? "Saved NBA data could not load. Reload to try again."
         : "Offline · Reconnect to load current NBA stats.";
-
       render();
     }
   }
@@ -838,9 +624,7 @@ summary::after{content:"⌄";float:right}
   load();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker
-      .register("/service-worker.js")
-      .catch(() => {});
+    navigator.serviceWorker.register("/service-worker.js").catch(() => {});
   }
 })();
 </script>
