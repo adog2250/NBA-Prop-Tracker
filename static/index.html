@@ -197,6 +197,17 @@ input{font-size:16px}
   );
 
   function identity(player) {
+    player = {
+      ...player,
+      ...(data.players.find(p => p.id === player.id) || {})
+    };
+
+    const bio = [
+      player.position,
+      player.height,
+      player.weight
+    ].filter(Boolean).join(" · ");
+
     const url = player.id < 0
       ? `https://a.espncdn.com/i/headshots/nba/players/full/${Math.abs(player.id)}.png`
       : `https://cdn.nba.com/headshots/nba/latest/260x190/${player.id}.png`;
@@ -207,6 +218,7 @@ input{font-size:16px}
         <span>
           <span class="muted">${esc(player.team)}</span><br>
           <strong>${esc(player.name)}</strong>
+          ${bio ? `<br><span class="muted">${esc(bio)}</span>` : ""}
         </span>
       </span>
     `;
@@ -577,6 +589,9 @@ input{font-size:16px}
           id:player.id,
           name:player.name,
           team:player.team,
+          position:player.position,
+          height:player.height,
+          weight:player.weight,
           stat,
           side,
           average:avg(player,stat),
