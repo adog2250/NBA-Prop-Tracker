@@ -1,13 +1,9 @@
-
-"""NBA Prop Tracker: full 2026-27 regular-season backfill.
-
-Collects completed NBA games, players, rosters, and box scores.
-Safe to rerun. Does not delete existing records.
-"""
+"""ZenStats: backfill saved NBA games and full player box scores."""
 
 import json
 import os
 import time
+
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -21,6 +17,92 @@ SEASON = "2026-27"
 REQUEST_DELAY = 0.4
 
 
+def full_box_fields(stats):
+    """Missing source values remain unknown, not zero."""
+    normalized = {
+        str(key).strip().upper().replace(" ", "").replace("_", ""): value
+        for key, value in stats.items()
+    }
+
+    def read(*keys):
+        for key in keys:
+            if key not in normalized:
+                continue
+
+            value = normalized[key]
+
+            if (
+                value is not None
+                and str(value).strip().upper()
+                not in ("", "--", "-", "N/A")
+            ):
+                return str(value).strip()
+
+        return None
+
+    def integer(value):
+        if value is None:
+            return None
+
+        if not value.isdigit():
+            raise ValueError("Invalid box-score count: " + value)
+
+        return int(value)
+
+    def pair(combined, made, attempted):
+        value = read(*combined)
+
+        if value is not None and "-" in value:
+            parts = value.split("-", 1)
+            result = tuple(integer(part.strip()) for part in parts)
+        else:
+            result = (
+                integer(read(*made)),
+                integer(read(*attempted)),
+            )
+
+        if (
+            all(value is not None for value in result)
+            and result[0] > result[1]
+        ):
+            raise ValueError("Made shots exceed attempted shots")
+
+        return result
+
+    fgm, fga = pair(
+        ("FG", "FGM-A", "FGMA"),
+        ("FGM", "FIELDGOALSMADE"),
+        ("FGA", "FIELDGOALSATTEMPTED"),
+    )
+
+    ftm, fta = pair(
+        ("FT", "FTM-A", "FTMA"),
+        ("FTM", "FREETHROWSMADE"),
+        ("FTA", "FREETHROWSATTEMPTED"),
+    )
+
+    fouls = integer(read("PF", "FOULS", "PERSONALFOULS"))
+    offensive = integer(
+        read("OREB", "OR", "OFF", "OFFENSIVEREBOUNDS")
+    )
+    defensive = integer(
+        read("DREB", "DR", "DEF", "DEFENSIVEREBOUNDS")
+    )
+    total = integer(read("REB", "REBOUNDS"))
+
+    if (
+        all(value is not None for value in (
+            offensive, defensive, total
+        ))
+        and offensive + defensive != total
+    ):
+        raise ValueError(
+            "Offensive plus defensive rebounds differs from total"
+        )
+
+    return fgm, fga, ftm, fta, fouls, offensive, defensive
+
+
 def fetch(path, params=None):
     url = BASE + path
 
@@ -32,7 +114,7 @@ def fetch(path, params=None):
             request = Request(
                 url,
                 headers={
-                    "User-Agent": "Mozilla/5.0 NBA-Prop-Tracker",
+                    "User-Agent": "Mozilla/5.0 ZenStats",
                     "Accept": "application/json",
                 },
             )
@@ -69,10 +151,7 @@ def to_minutes(value):
 
         if ":" in value:
             minute, second = value.split(":", 1)
-            return round(
-                int(minute) + int(second) / 60,
-                3,
-            )
+            return round(int(minute) + int(second) / 60, 3)
 
         return float(value)
 
@@ -81,9 +160,7 @@ def to_minutes(value):
 
 
 def get_teams(cursor):
-    cursor.execute(
-        "SELECT id, abbreviation FROM teams"
-    )
+    cursor.execute("SELECT id, abbreviation FROM teams")
 
     teams = {
         str(abbreviation).upper(): int(team_id)
@@ -128,8 +205,9 @@ def save_player(cursor, athlete, team_id=None):
     if team_id is None:
         cursor.execute(
             """
-            INSERT INTO players
-                (id, full_name, is_active, updated_at)
+            INSERT INTO players (
+                id, full_name, is_active, updated_at
+            )
             VALUES (%s, %s, TRUE, NOW())
             ON CONFLICT (id) DO UPDATE SET
                 full_name = EXCLUDED.full_name,
@@ -137,13 +215,13 @@ def save_player(cursor, athlete, team_id=None):
             """,
             (player_id, name),
         )
-
     else:
         cursor.execute(
             """
-            INSERT INTO players
-                (id, full_name, current_team_id,
-                 is_active, updated_at)
+            INSERT INTO players (
+                id, full_name, current_team_id,
+                is_active, updated_at
+            )
             VALUES (%s, %s, %s, TRUE, NOW())
             ON CONFLICT (id) DO UPDATE SET
                 full_name = EXCLUDED.full_name,
@@ -161,10 +239,7 @@ def sync_rosters(cursor, teams):
     payload = fetch("/teams")
 
     if payload is None:
-        print(
-            "Could not load team directory.",
-            flush=True,
-        )
+        print("Could not load team directory.", flush=True)
         return 0
 
     count = 0
@@ -175,34 +250,28 @@ def sync_rosters(cursor, teams):
                 team = entry.get("team") or {}
 
                 team_id = teams.get(
-                    str(
-                        team.get("abbreviation", "")
-                    ).upper()
+                    str(team.get("abbreviation", "")).upper()
                 )
-
                 espn_id = team.get("id")
 
                 if team_id is None or not espn_id:
                     continue
 
-                roster = fetch(
-                    f"/teams/{espn_id}/roster"
-                )
+                roster = fetch(f"/teams/{espn_id}/roster")
 
                 if roster is None:
                     continue
 
                 for group in roster.get("athletes") or []:
-                    if "items" in group:
-                        athletes = group.get("items") or []
-                    else:
-                        athletes = [group]
+                    athletes = (
+                        group.get("items") or []
+                        if "items" in group
+                        else [group]
+                    )
 
                     for athlete in athletes:
                         player_id = save_player(
-                            cursor,
-                            athlete,
-                            team_id,
+                            cursor, athlete, team_id
                         )
 
                         if player_id is not None:
@@ -217,9 +286,7 @@ def save_game(cursor, event, day, teams):
     if not competitions:
         return None
 
-    competitors = (
-        competitions[0].get("competitors") or []
-    )
+    competitors = competitions[0].get("competitors") or []
 
     home = next(
         (
@@ -228,7 +295,6 @@ def save_game(cursor, event, day, teams):
         ),
         None,
     )
-
     away = next(
         (
             item for item in competitors
@@ -241,15 +307,10 @@ def save_game(cursor, event, day, teams):
         return None
 
     home_abbr = str(
-        (home.get("team") or {}).get(
-            "abbreviation", ""
-        )
+        (home.get("team") or {}).get("abbreviation", "")
     ).upper()
-
     away_abbr = str(
-        (away.get("team") or {}).get(
-            "abbreviation", ""
-        )
+        (away.get("team") or {}).get("abbreviation", "")
     ).upper()
 
     home_id = teams.get(home_abbr)
@@ -264,8 +325,7 @@ def save_game(cursor, event, day, teams):
         return None
 
     status = (
-        (event.get("status") or {}).get("type")
-        or {}
+        (event.get("status") or {}).get("type") or {}
     )
 
     completed = (
@@ -278,14 +338,16 @@ def save_game(cursor, event, day, teams):
 
     cursor.execute(
         """
-        INSERT INTO games
-            (id, game_date, season,
-             home_team_id, away_team_id,
-             home_score, away_score,
-             status, stats_verified, updated_at)
-        VALUES
-            (%s, %s, %s, %s, %s,
-             %s, %s, 'final', FALSE, NOW())
+        INSERT INTO games (
+            id, game_date, season,
+            home_team_id, away_team_id,
+            home_score, away_score,
+            status, stats_verified, updated_at
+        )
+        VALUES (
+            %s, %s, %s, %s, %s,
+            %s, %s, 'final', FALSE, NOW()
+        )
         ON CONFLICT (id) DO UPDATE SET
             game_date = EXCLUDED.game_date,
             season = EXCLUDED.season,
@@ -311,10 +373,7 @@ def save_game(cursor, event, day, teams):
 
 
 def save_boxscore(cursor, game_id, teams):
-    payload = fetch(
-        "/summary",
-        {"event": game_id},
-    )
+    payload = fetch("/summary", {"event": game_id})
 
     if payload is None:
         return None
@@ -332,9 +391,7 @@ def save_boxscore(cursor, game_id, teams):
 
     for group in groups:
         abbreviation = str(
-            (group.get("team") or {}).get(
-                "abbreviation", ""
-            )
+            (group.get("team") or {}).get("abbreviation", "")
         ).upper()
 
         team_id = teams.get(abbreviation)
@@ -368,12 +425,8 @@ def save_boxscore(cursor, game_id, teams):
                     or any(
                         to_int(stats.get(key)) > 0
                         for key in (
-                            "PTS",
-                            "REB",
-                            "AST",
-                            "STL",
-                            "BLK",
-                            "TO",
+                            "PTS", "REB", "AST",
+                            "STL", "BLK", "TO",
                         )
                     )
                 )
@@ -382,11 +435,7 @@ def save_boxscore(cursor, game_id, teams):
                     continue
 
                 athlete = item.get("athlete") or {}
-
-                player_id = save_player(
-                    cursor,
-                    athlete,
-                )
+                player_id = save_player(cursor, athlete)
 
                 if player_id is None:
                     continue
@@ -402,26 +451,42 @@ def save_boxscore(cursor, game_id, teams):
                     str(three_point_stat).split("-")[0]
                 )
 
-                attempt_parts = str(three_point_stat).split("-", 1)
+                attempt_parts = str(
+                    three_point_stat
+                ).split("-", 1)
+
                 threes_attempted = None
+
                 if len(attempt_parts) == 2:
                     try:
                         threes_attempted = int(attempt_parts[1])
                     except (ValueError, TypeError):
-                        raise ValueError("Invalid three-point attempts")
+                        raise ValueError(
+                            "Invalid three-point attempts"
+                        )
+
                     if threes_attempted < threes_made:
-                        raise ValueError("Three-point attempts below makes")
+                        raise ValueError(
+                            "Three-point attempts below makes"
+                        )
 
                 cursor.execute(
                     """
-                    INSERT INTO player_game_stats
-                        (game_id, player_id, team_id,
-                         minutes, points, rebounds,
-                         assists, threes_made, threes_attempted,
-                         steals, blocks, turnovers)
-                    VALUES
-                        (%s, %s, %s, %s, %s, %s,
-                         %s, %s, %s, %s, %s, %s)
+                    INSERT INTO player_game_stats (
+                        game_id, player_id, team_id,
+                        minutes, points, rebounds,
+                        assists, threes_made, threes_attempted,
+                        steals, blocks, turnovers,
+                        field_goals_made, field_goals_attempted,
+                        free_throws_made, free_throws_attempted,
+                        personal_fouls,
+                        offensive_rebounds, defensive_rebounds
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s
+                    )
                     ON CONFLICT (game_id, player_id)
                     DO UPDATE SET
                         team_id = EXCLUDED.team_id,
@@ -433,7 +498,35 @@ def save_boxscore(cursor, game_id, teams):
                         threes_attempted = EXCLUDED.threes_attempted,
                         steals = EXCLUDED.steals,
                         blocks = EXCLUDED.blocks,
-                        turnovers = EXCLUDED.turnovers
+                        turnovers = EXCLUDED.turnovers,
+                        field_goals_made = COALESCE(
+                            EXCLUDED.field_goals_made,
+                            player_game_stats.field_goals_made
+                        ),
+                        field_goals_attempted = COALESCE(
+                            EXCLUDED.field_goals_attempted,
+                            player_game_stats.field_goals_attempted
+                        ),
+                        free_throws_made = COALESCE(
+                            EXCLUDED.free_throws_made,
+                            player_game_stats.free_throws_made
+                        ),
+                        free_throws_attempted = COALESCE(
+                            EXCLUDED.free_throws_attempted,
+                            player_game_stats.free_throws_attempted
+                        ),
+                        personal_fouls = COALESCE(
+                            EXCLUDED.personal_fouls,
+                            player_game_stats.personal_fouls
+                        ),
+                        offensive_rebounds = COALESCE(
+                            EXCLUDED.offensive_rebounds,
+                            player_game_stats.offensive_rebounds
+                        ),
+                        defensive_rebounds = COALESCE(
+                            EXCLUDED.defensive_rebounds,
+                            player_game_stats.defensive_rebounds
+                        )
                     """,
                     (
                         game_id,
@@ -448,6 +541,7 @@ def save_boxscore(cursor, game_id, teams):
                         to_int(stats.get("STL")),
                         to_int(stats.get("BLK")),
                         to_int(stats.get("TO")),
+                        *full_box_fields(stats),
                     ),
                 )
 
@@ -474,14 +568,12 @@ def main():
     database_url = os.environ.get("DATABASE_URL")
 
     if not database_url:
-        raise RuntimeError(
-            "DATABASE_URL secret is missing."
-        )
+        raise RuntimeError("DATABASE_URL secret is missing.")
 
     today = datetime.now(timezone.utc).date()
 
     print(
-        "NBA FULL SEASON BACKFILL",
+        "ZENSTATS FULL BOX-SCORE BACKFILL",
         f"Season: {SEASON}",
         f"Dates: {START_DATE} through {today}",
         sep="\n",
@@ -497,15 +589,10 @@ def main():
         connect_timeout=15,
         sslmode="require",
     ) as connection:
-
         with connection.cursor() as cursor:
             teams = get_teams(cursor)
 
-            roster_count = sync_rosters(
-                cursor,
-                teams,
-            )
-
+            roster_count = sync_rosters(cursor, teams)
             connection.commit()
 
             print(
@@ -529,7 +616,6 @@ def main():
                     failed.append(
                         f"Scoreboard unavailable: {day}"
                     )
-
                     day += timedelta(days=1)
                     continue
 
@@ -540,10 +626,7 @@ def main():
 
                     try:
                         game_id = save_game(
-                            cursor,
-                            event,
-                            day,
-                            teams,
+                            cursor, event, day, teams
                         )
 
                         if game_id is None:
@@ -551,9 +634,7 @@ def main():
                             continue
 
                         count = save_boxscore(
-                            cursor,
-                            game_id,
-                            teams,
+                            cursor, game_id, teams
                         )
 
                         if count is None:
@@ -568,7 +649,6 @@ def main():
 
                     except Exception as error:
                         connection.rollback()
-
                         failed.append(
                             f"Game {game_id}: {error}"
                         )
@@ -580,9 +660,7 @@ def main():
 
                 day += timedelta(days=1)
 
-            cursor.execute(
-                "SELECT COUNT(*) FROM players"
-            )
+            cursor.execute("SELECT COUNT(*) FROM players")
             player_count = cursor.fetchone()[0]
 
             cursor.execute(
@@ -600,7 +678,6 @@ def main():
                 """,
                 (START_DATE, today),
             )
-
             unverified_count = cursor.fetchone()[0]
 
             print(
@@ -627,10 +704,7 @@ def main():
             "need another backfill attempt."
         )
 
-    print(
-        "SEASON BACKFILL FINISHED",
-        flush=True,
-    )
+    print("SEASON BACKFILL FINISHED", flush=True)
 
 
 if __name__ == "__main__":
