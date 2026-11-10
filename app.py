@@ -89,7 +89,10 @@ def dashboard(day):
                 p.id,
                 p.full_name,
                 p.current_team_id,
-                t.abbreviation
+                t.abbreviation,
+                to_jsonb(p)->>'listed_position',
+                to_jsonb(p)->>'listed_height',
+                to_jsonb(p)->>'listed_weight'
             FROM players p
             LEFT JOIN teams t ON t.id = p.current_team_id
             WHERE p.is_active = TRUE
@@ -103,6 +106,9 @@ def dashboard(day):
                 "name": row[1],
                 "team_id": row[2],
                 "team": row[3] or "",
+                "position": row[4],
+                "height": row[5],
+                "weight": row[6],
                 "logs": [],
             }
             for row in cur.fetchall()
