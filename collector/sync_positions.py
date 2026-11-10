@@ -9,6 +9,15 @@ from backfill_season import fetch, get_teams
 
 POSITIONS = ("PG", "SG", "SF", "PF", "C")
 
+TEAM_ALIASES = {
+    "GS": "GSW",
+    "NY": "NYK",
+    "SA": "SAS",
+    "NO": "NOP",
+    "UTAH": "UTA",
+    "WSH": "WAS",
+}
+
 
 def player_positions(payload):
     """Collect listed roles, ordered by depth rank then position."""
@@ -60,6 +69,7 @@ def main():
         raise RuntimeError("ESPN team directory could not load.")
 
     failed = []
+    unmatched = []
     processed = set()
     updated = 0
 
@@ -80,14 +90,27 @@ def main():
                             team.get("abbreviation") or ""
                         ).upper()
 
-                        team_id = teams.get(abbreviation)
+                        normalized = TEAM_ALIASES.get(
+                            abbreviation,
+                            abbreviation,
+                        )
+
+                        team_id = teams.get(normalized)
+
+                        if team_id is None:
+                            team_id = teams.get(abbreviation)
+
                         espn_id = team.get("id")
 
-                        if (
-                            team_id is None
-                            or not espn_id
-                            or team_id in processed
-                        ):
+                        if team_id is None or not espn_id:
+                            unmatched.append(
+                                team.get("displayName")
+                                or abbreviation
+                                or "Unknown team"
+                            )
+                            continue
+
+                        if team_id in processed:
                             continue
 
                         processed.add(team_id)
@@ -136,19 +159,36 @@ def main():
                         )
 
     print(
+        f"Teams checked: {len(processed)}/30",
         f"Specific positions updated: {updated}",
+        sep="\n",
         flush=True,
     )
 
-    if len(processed) != 30 or failed:
-        raise RuntimeError(
-            f"Checked {len(processed)}/30 teams. "
-            "Retry missing depth charts: "
-            + (
-                ", ".join(failed)
-                or "incomplete team directory"
-            )
+    problems = []
+
+    if unmatched:
+        problems.append(
+            "Unmatched teams: " + ", ".join(unmatched)
         )
+
+    if failed:
+        problems.append(
+            "Unavailable depth charts: " + ", ".join(failed)
+        )
+
+    if len(processed) != 30:
+        problems.append(
+            f"Expected 30 teams; checked {len(processed)}"
+        )
+
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+    print(
+        "PLAYER POSITION SYNC FINISHED",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
