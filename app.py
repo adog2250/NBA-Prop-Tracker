@@ -1,15 +1,17 @@
-"""ZenStats: saved game logs, player box scores, and PWA assets."""
+"""ZenStats: player history, box scores, team statistics, and PWA."""
 
 import json
 import logging
 import mimetypes
 import os
+
 from datetime import datetime, date
 from pathlib import Path
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 import psycopg
+
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -50,6 +52,184 @@ def season_bounds(day):
     return date(year, 10, 1), date(year + 1, 7, 1)
 
 
+def summarize_teams(rows):
+    grouped = {}
+
+    for (
+        team_id,
+        name,
+        abbreviation,
+        scored,
+        allowed,
+        own,
+        opponent,
+    ) in rows:
+        if (
+            scored is None
+            or allowed is None
+            or scored == allowed
+        ):
+            continue
+
+        item = grouped.setdefault(team_id, {
+            "id": team_id,
+            "name": name,
+            "team": abbreviation,
+            "games": 0,
+            "wins": 0,
+            "losses": 0,
+            "_points": [],
+            "_allowed": [],
+            "_rebounds": [],
+            "_rebounds_allowed": [],
+            "_assists": [],
+            "_turnovers": [],
+            "_fg": [],
+            "_three": [],
+            "_ft": [],
+        })
+
+        own = own or {}
+        opponent = opponent or {}
+
+        item["games"] += 1
+        item["wins" if scored > allowed else "losses"] += 1
+
+        item["_points"].append(float(scored))
+        item["_allowed"].append(float(allowed))
+
+        for target, source, field in (
+            ("_rebounds", own, "rebounds"),
+            ("_rebounds_allowed", opponent, "rebounds"),
+            ("_assists", own, "assists"),
+            ("_turnovers", own, "turnovers"),
+        ):
+            if source.get(field) is not None:
+                item[target].append(float(source[field]))
+
+        for target, made, attempted in (
+            (
+                "_fg",
+                "field_goals_made",
+                "field_goals_attempted",
+            ),
+            (
+                "_three",
+                "threes_made",
+                "threes_attempted",
+            ),
+            (
+                "_ft",
+                "free_throws_made",
+                "free_throws_attempted",
+            ),
+        ):
+            if (
+                own.get(made) is not None
+                and own.get(attempted) is not None
+            ):
+                item[target].append((
+                    float(own[made]),
+                    float(own[attempted]),
+                ))
+
+    for item in grouped.values():
+        item["box_games"] = len(item["_rebounds"])
+
+        item["opponent_box_games"] = len(
+            item["_rebounds_allowed"]
+        )
+
+        for target, source in (
+            ("points", "_points"),
+            ("points_allowed", "_allowed"),
+            ("rebounds", "_rebounds"),
+            ("rebounds_allowed", "_rebounds_allowed"),
+            ("assists", "_assists"),
+            ("turnovers", "_turnovers"),
+        ):
+            values = item.pop(source)
+
+            item[target] = (
+                sum(values) / len(values)
+                if values
+                else None
+            )
+
+        for target, source in (
+            ("fg_pct", "_fg"),
+            ("three_pct", "_three"),
+            ("ft_pct", "_ft"),
+        ):
+            values = item.pop(source)
+
+            attempts = sum(
+                pair[1]
+                for pair in values
+            )
+
+            item[target] = (
+                100 * sum(pair[0] for pair in values) / attempts
+                if attempts
+                else None
+            )
+
+    return grouped
+
+
+def team_stats(cur, first, last, day):
+    cur.execute(
+        """
+        WITH sides AS (
+            SELECT
+                id,
+                home_team_id AS team_id,
+                away_team_id AS opponent_id,
+                home_score AS scored,
+                away_score AS allowed
+            FROM games
+            WHERE status = 'final'
+              AND game_date >= %s
+              AND game_date < %s
+              AND game_date <= %s
+
+            UNION ALL
+
+            SELECT
+                id,
+                away_team_id AS team_id,
+                home_team_id AS opponent_id,
+                away_score AS scored,
+                home_score AS allowed
+            FROM games
+            WHERE status = 'final'
+              AND game_date >= %s
+              AND game_date < %s
+              AND game_date <= %s
+        )
+        SELECT
+            x.team_id,
+            t.name,
+            t.abbreviation,
+            x.scored,
+            x.allowed,
+            to_jsonb(s),
+            to_jsonb(o)
+        FROM sides x
+        JOIN teams t ON t.id = x.team_id
+        LEFT JOIN team_game_stats s
+          ON s.game_id = x.id::text
+         AND s.team_id = x.team_id
+        LEFT JOIN team_game_stats o
+          ON o.game_id = x.id::text
+         AND o.team_id = x.opponent_id
+        """,
+        (first, last, day, first, last, day),
+    )
+
+    return summarize_teams(cur.fetchall())
+
+
 def dashboard(day):
     first, last = season_bounds(day)
 
@@ -75,8 +255,12 @@ def dashboard(day):
         games = [
             dict(zip(
                 (
-                    "id", "home_id", "home",
-                    "away_id", "away", "status",
+                    "id",
+                    "home_id",
+                    "home",
+                    "away_id",
+                    "away",
+                    "status",
                 ),
                 row,
             ))
@@ -153,9 +337,23 @@ def dashboard(day):
 
         for row in cur.fetchall():
             (
-                pid, gid, game_date, team_id, home_id,
-                home, away, mins, pts, reb, ast,
-                threes, stl, blk, attempts, stamp, raw,
+                pid,
+                gid,
+                game_date,
+                team_id,
+                home_id,
+                home,
+                away,
+                mins,
+                pts,
+                reb,
+                ast,
+                threes,
+                stl,
+                blk,
+                attempts,
+                stamp,
+                raw,
             ) = row
 
             if pid not in players:
@@ -191,14 +389,19 @@ def dashboard(day):
 
             players[pid]["logs"].append(log)
 
-            if stamp and (updated is None or stamp > updated):
+            if stamp and (
+                updated is None or stamp > updated
+            ):
                 updated = stamp
+
+        teams = team_stats(cur, first, last, day)
 
     return {
         "date": day.isoformat(),
         "season": f"{first.year}–{last.year % 100:02d}",
         "games": games,
         "players": list(players.values()),
+        "team_stats": teams,
         "updated_at": updated,
     }
 
@@ -269,6 +472,7 @@ def app(environ, start_response):
                         ZoneInfo("America/Chicago")
                     ).date()
                 )
+
             except ValueError:
                 return respond(
                     start_response,
@@ -276,7 +480,10 @@ def app(environ, start_response):
                     "400 Bad Request",
                 )
 
-            return respond(start_response, dashboard(day))
+            return respond(
+                start_response,
+                dashboard(day),
+            )
 
     except Exception:
         logging.exception("ZenStats request failed")
