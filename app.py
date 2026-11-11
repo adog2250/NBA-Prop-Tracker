@@ -1,11 +1,11 @@
-"""ZenStats: player history, box scores, team statistics, and PWA."""
+"""ZenStats: player history, team statistics, box scores, and PWA."""
 
 import json
 import logging
 import mimetypes
 import os
 
-from datetime import datetime, date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
@@ -49,7 +49,11 @@ def respond(
 
 def season_bounds(day):
     year = day.year if day.month >= 10 else day.year - 1
-    return date(year, 10, 1), date(year + 1, 7, 1)
+
+    return (
+        date(year, 10, 1),
+        date(year + 1, 7, 1),
+    )
 
 
 def summarize_teams(rows):
@@ -230,8 +234,89 @@ def team_stats(cur, first, last, day):
     return summarize_teams(cur.fetchall())
 
 
+LOG_SELECT = """
+    SELECT
+        s.player_id,
+        g.id,
+        g.game_date,
+        s.team_id,
+        g.home_team_id,
+        ht.abbreviation,
+        at.abbreviation,
+        s.minutes,
+        s.points,
+        s.rebounds,
+        s.assists,
+        s.threes_made,
+        s.steals,
+        s.blocks,
+        (to_jsonb(s)->>'threes_attempted')::integer,
+        g.updated_at,
+        to_jsonb(s)
+    FROM player_game_stats s
+    JOIN games g ON g.id = s.game_id
+    JOIN teams ht ON ht.id = g.home_team_id
+    JOIN teams at ON at.id = g.away_team_id
+    JOIN players p ON p.id = s.player_id
+"""
+
+
+def make_log(row):
+    (
+        pid,
+        gid,
+        game_date,
+        team_id,
+        home_id,
+        home,
+        away,
+        mins,
+        pts,
+        reb,
+        ast,
+        threes,
+        stl,
+        blk,
+        attempts,
+        stamp,
+        raw,
+    ) = row
+
+    if mins is None or float(mins) <= 0:
+        return None
+
+    raw = raw or {}
+
+    return {
+        "id": str(gid),
+        "date": game_date.isoformat(),
+        "home": team_id == home_id,
+        "opp": away if team_id == home_id else home,
+        "home_team": home,
+        "away_team": away,
+        "MIN": float(mins),
+        "PTS": pts,
+        "REB": reb,
+        "AST": ast,
+        "3PM": threes,
+        "3PA": attempts,
+        "STL": stl,
+        "BLK": blk,
+        "TOV": raw.get("turnovers"),
+        "FGM": raw.get("field_goals_made"),
+        "FGA": raw.get("field_goals_attempted"),
+        "FTM": raw.get("free_throws_made"),
+        "FTA": raw.get("free_throws_attempted"),
+        "PF": raw.get("personal_fouls"),
+        "OREB": raw.get("offensive_rebounds"),
+        "DREB": raw.get("defensive_rebounds"),
+    }
+
+
 def dashboard(day):
     first, last = season_bounds(day)
+    history_first = date(first.year - 1, 10, 1)
+    updated = None
 
     with database() as conn, conn.cursor() as cur:
         cur.execute(
@@ -294,35 +379,14 @@ def dashboard(day):
                 "height": row[5],
                 "weight": row[6],
                 "logs": [],
+                "h2h_logs": [],
             }
             for row in cur.fetchall()
         }
 
+        # Current-season games for averages and All/Home/Away.
         cur.execute(
-            """
-            SELECT
-                s.player_id,
-                g.id,
-                g.game_date,
-                s.team_id,
-                g.home_team_id,
-                ht.abbreviation,
-                at.abbreviation,
-                s.minutes,
-                s.points,
-                s.rebounds,
-                s.assists,
-                s.threes_made,
-                s.steals,
-                s.blocks,
-                (to_jsonb(s)->>'threes_attempted')::integer,
-                g.updated_at,
-                to_jsonb(s)
-            FROM player_game_stats s
-            JOIN games g ON g.id = s.game_id
-            JOIN teams ht ON ht.id = g.home_team_id
-            JOIN teams at ON at.id = g.away_team_id
-            JOIN players p ON p.id = s.player_id
+            LOG_SELECT + """
             WHERE p.is_active = TRUE
               AND g.status = 'final'
               AND g.game_date >= %s
@@ -333,72 +397,78 @@ def dashboard(day):
             (first, last, day),
         )
 
-        updated = None
-
         for row in cur.fetchall():
-            (
-                pid,
-                gid,
-                game_date,
-                team_id,
-                home_id,
-                home,
-                away,
-                mins,
-                pts,
-                reb,
-                ast,
-                threes,
-                stl,
-                blk,
-                attempts,
-                stamp,
-                raw,
-            ) = row
+            log = make_log(row)
 
-            if pid not in players:
+            if row[0] not in players or log is None:
                 continue
 
-            if mins is None or float(mins) <= 0:
-                continue
-
-            log = {
-                "id": str(gid),
-                "date": game_date.isoformat(),
-                "home": team_id == home_id,
-                "opp": away if team_id == home_id else home,
-                "home_team": home,
-                "away_team": away,
-                "MIN": float(mins),
-                "PTS": pts,
-                "REB": reb,
-                "AST": ast,
-                "3PM": threes,
-                "3PA": attempts,
-                "STL": stl,
-                "BLK": blk,
-                "TOV": raw.get("turnovers"),
-                "FGM": raw.get("field_goals_made"),
-                "FGA": raw.get("field_goals_attempted"),
-                "FTM": raw.get("free_throws_made"),
-                "FTA": raw.get("free_throws_attempted"),
-                "PF": raw.get("personal_fouls"),
-                "OREB": raw.get("offensive_rebounds"),
-                "DREB": raw.get("defensive_rebounds"),
-            }
-
-            players[pid]["logs"].append(log)
+            players[row[0]]["logs"].append(log)
+            stamp = row[15]
 
             if stamp and (
                 updated is None or stamp > updated
             ):
                 updated = stamp
 
+        # Previous-season meetings against today's opponents.
+        # Historical team membership comes from that game's box score.
+        cur.execute(
+            """
+            WITH targets AS (
+                SELECT
+                    home_team_id AS team_id,
+                    away_team_id AS opponent_id
+                FROM games
+                WHERE game_date = %s
+
+                UNION
+
+                SELECT
+                    away_team_id AS team_id,
+                    home_team_id AS opponent_id
+                FROM games
+                WHERE game_date = %s
+            )
+            """ + LOG_SELECT + """
+            WHERE p.is_active = TRUE
+              AND g.status = 'final'
+              AND g.game_date >= %s
+              AND g.game_date < %s
+              AND s.team_id IN (
+                  g.home_team_id,
+                  g.away_team_id
+              )
+              AND EXISTS (
+                  SELECT 1
+                  FROM targets target
+                  WHERE target.team_id = p.current_team_id
+                    AND target.opponent_id = CASE
+                        WHEN s.team_id = g.home_team_id
+                        THEN g.away_team_id
+                        ELSE g.home_team_id
+                    END
+              )
+            ORDER BY g.game_date DESC, g.id DESC
+            """,
+            (day, day, history_first, first),
+        )
+
+        for row in cur.fetchall():
+            log = make_log(row)
+
+            if row[0] in players and log is not None:
+                players[row[0]]["h2h_logs"].append(log)
+
         teams = team_stats(cur, first, last, day)
 
     return {
         "date": day.isoformat(),
         "season": f"{first.year}–{last.year % 100:02d}",
+        "h2h_seasons": (
+            f"{history_first.year}–{first.year % 100:02d} + "
+            f"{first.year}–{last.year % 100:02d}"
+        ),
         "games": games,
         "players": list(players.values()),
         "team_stats": teams,
