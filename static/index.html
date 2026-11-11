@@ -106,9 +106,18 @@ input{font-size:16px}
 <script>
 (() => {
   const q = selector => document.querySelector(selector);
-  const cats = ["PTS","REB","AST","3PM","PR","PA","RA","PRA","STL","BLK"];
 
-  let data = {players:[],games:[],team_stats:{}};
+  const cats = [
+    "PTS","REB","AST","3PM","PR",
+    "PA","RA","PRA","STL","BLK"
+  ];
+
+  let data = {
+    players:[],
+    games:[],
+    team_stats:{}
+  };
+
   let game = "all";
   let team = "All";
   let stat = "PTS";
@@ -187,6 +196,7 @@ input{font-size:16px}
   }
 
   function avg(player,key) {
+    // Season averages use current-season logs only.
     const values = player.logs
       .map(log => val(log,key))
       .filter(v => v !== null);
@@ -232,7 +242,18 @@ input{font-size:16px}
   function chosen(player,key) {
     const opponent = opponentFor(player);
 
-    return player.logs.filter(log => {
+    // Only Head-to-Head includes previous-season meetings.
+    const pool = venue === "Head-to-Head"
+      ? [...player.logs, ...(player.h2h_logs || [])]
+      : player.logs;
+
+    const unique = [
+      ...new Map(
+        pool.map(log => [String(log.id),log])
+      ).values()
+    ];
+
+    return unique.filter(log => {
       if (val(log,key) === null) return false;
 
       if (venue === "Head-to-Head") {
@@ -246,7 +267,7 @@ input{font-size:16px}
         venue === "All" ||
         log.home === (venue === "Home")
       );
-    }).slice().sort(
+    }).sort(
       (a,b) => String(b.date).localeCompare(String(a.date))
     ).slice(0,n);
   }
@@ -443,7 +464,7 @@ input{font-size:16px}
         <div class="column">
           <button
             class="box-hit"
-            data-box="${player.id}:${player.logs.indexOf(log)}"
+            data-box="${player.id}:${esc(log.id)}"
             aria-label="${esc(player.name)} game box score, ${esc(log.date)}, ${esc(log.opp)}, ${v} ${esc(key)}"
           ></button>
           ${attempts}
@@ -509,7 +530,7 @@ input{font-size:16px}
                 <td>${esc(matchupLabel(log))}</td>
                 <td>${val(log,key)}</td>
                 <td>
-                  <button data-box="${player.id}:${player.logs.indexOf(log)}">
+                  <button data-box="${player.id}:${esc(log.id)}">
                     View
                   </button>
                 </td>
@@ -569,7 +590,8 @@ input{font-size:16px}
         ${venue === "Head-to-Head" ? `
           <p class="muted">
             Against ${esc(opponentFor(player) || "the selected opponent")}
-            · available saved games only. Season average stays unchanged.
+            · ${esc(data.h2h_seasons || "current and previous season")}.
+            Most recent saved meetings; season average stays current-season only.
           </p>
         ` : ""}
 
@@ -849,15 +871,18 @@ input{font-size:16px}
     )?.dataset.player;
 
     if (action.box) {
-      const [id,index] = action.box.split(":").map(Number);
+      const [id,gameId] = action.box.split(":");
 
       const player = data.players.find(
-        p => p.id===id
+        p => p.id===Number(id)
       );
 
-      if (player && player.logs[index]) {
-        showBox(player,player.logs[index]);
-      }
+      const log = player && [
+        ...player.logs,
+        ...(player.h2h_logs || [])
+      ].find(log => String(log.id) === gameId);
+
+      if (log) showBox(player,log);
 
       return;
     }
