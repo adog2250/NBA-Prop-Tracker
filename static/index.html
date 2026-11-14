@@ -36,6 +36,8 @@ img{width:36px;height:36px;object-fit:cover;border-radius:50%;background:#35435a
 .team-cards{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin:12px 0}
 .team-card{min-width:0;background:#1d283b;border:1px solid #3c4b63;border-radius:10px;padding:12px}
 .team-card h3{margin:0 0 3px}
+.team-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.favorite-team-logo{width:28px;height:28px;object-fit:contain;background:transparent;border-radius:0}
 .team-stat-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:7px 0;border-bottom:1px solid #ffffff12}
 .team-stat-row span{color:#afbdd1;font-size:11px}
 .team-stat-row strong{white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -119,7 +121,7 @@ input{font-size:16px}
 
 <div class="app-columns">
   <div id="content"></div>
-  <aside id="favorites" aria-label="Favorite players playing today"></aside>
+  <aside id="favorites" aria-label="Favorite players and teams scheduled today"></aside>
 </div>
 
 <dialog id="box-dialog" aria-labelledby="box-title">
@@ -147,9 +149,11 @@ input{font-size:16px}
   let myPicks = false;
   let picks = [];
   let favorites = [];
+  let favoriteTeams = [];
 
   const storageKey = "nba-prop-tracker-picks-v1";
   const favoritesKey = "zenstats-favorite-players-v1";
+  const favoriteTeamsKey = "zenstats-favorite-teams-v1";
 
   const esc = value => String(value ?? "").replace(
     /[&<>"']/g,
@@ -169,17 +173,19 @@ input{font-size:16px}
       "They will last for this session only.";
   }
 
-  try {
-    const stored = JSON.parse(
-      localStorage.getItem(favoritesKey) || "[]"
-    );
-
-    if (Array.isArray(stored)) {
-      favorites = [...new Set(stored.filter(Number.isInteger))];
+  function loadFavoriteIds(key) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(stored)
+        ? [...new Set(stored.filter(Number.isInteger))]
+        : [];
+    } catch (error) {
+      return [];
     }
-  } catch (error) {
-    favorites = [];
   }
+
+  favorites = loadFavoriteIds(favoritesKey);
+  favoriteTeams = loadFavoriteIds(favoriteTeamsKey);
 
   try {
     const saved = JSON.parse(
@@ -204,6 +210,17 @@ input{font-size:16px}
       localStorage.setItem(storageKey,JSON.stringify(picks));
     } catch (error) {
       storageMessage();
+    }
+  }
+
+  function saveFavoriteIds(key,ids,label) {
+    try {
+      localStorage.setItem(key,JSON.stringify(ids));
+    } catch (error) {
+      q("#save-status").hidden = false;
+      q("#save-status").textContent =
+        label+" could not be saved on this device; " +
+        "they will last for this session only.";
     }
   }
 
@@ -249,12 +266,8 @@ input{font-size:16px}
     const code = teamCode(value);
 
     const slug = ({
-      GSW:"gs",
-      NYK:"ny",
-      SAS:"sa",
-      NOP:"no",
-      UTA:"utah",
-      WAS:"wsh"
+      GSW:"gs",NYK:"ny",SAS:"sa",
+      NOP:"no",UTA:"utah",WAS:"wsh"
     })[code] || code.toLowerCase();
 
     return "https://a.espncdn.com/i/teamlogos/nba/500/" +
@@ -308,14 +321,45 @@ input{font-size:16px}
     const active = favorites.includes(player.id);
 
     return `
-      <button
-        type="button"
-        class="favorite-star"
+      <button type="button" class="favorite-star"
         data-favorite="${player.id}"
         aria-pressed="${active}"
         aria-label="${active?"Remove ":"Add "}${esc(player.name)} ${active?"from":"to"} favorites"
       >${active?"★":"☆"}</button>
     `;
+  }
+
+  function favoriteTeamButton(id,name) {
+    const active = favoriteTeams.includes(id);
+
+    return `
+      <button type="button" class="favorite-star"
+        data-favorite-team="${id}"
+        aria-pressed="${active}"
+        aria-label="${active?"Remove ":"Add "}${esc(name)} ${active?"from":"to"} favorite teams"
+      >${active?"★":"☆"}</button>
+    `;
+  }
+
+  function scheduledFavoriteTeams() {
+    const teams = new Map();
+
+    for (const matchup of data.games) {
+      for (const [id,abbreviation] of [
+        [matchup.away_id,matchup.away],
+        [matchup.home_id,matchup.home]
+      ]) {
+        if (!favoriteTeams.includes(id)) continue;
+
+        if (!teams.has(id)) {
+          teams.set(id,{id,abbreviation,matchups:[]});
+        }
+
+        teams.get(id).matchups.push(matchup);
+      }
+    }
+
+    return [...teams.values()];
   }
 
   function identity(player) {
@@ -357,20 +401,19 @@ input{font-size:16px}
       }))
       .filter(item => item.matchups.length);
 
+    const teams = scheduledFavoriteTeams();
+
     q("#favorites").innerHTML = `
       <section class="favorite-panel">
-        <h2>
-          Favorites
-          <span class="muted">(${scheduled.length} playing today)</span>
-        </h2>
+        <h2>Favorites <span class="muted">Today</span></h2>
+
+        <h3>Players (${scheduled.length})</h3>
 
         ${scheduled.map(({player,matchups}) => `
           <div class="favorite-row">
-            <button
-              class="favorite-open"
+            <button class="favorite-open"
               data-favorite-open="${player.id}"
-              data-match="${esc(matchups[0].id)}"
-            >
+              data-match="${esc(matchups[0].id)}">
               ${identity(player)}
               <span class="muted">
                 ${matchups.map(g =>
@@ -385,13 +428,46 @@ input{font-size:16px}
         ${!scheduled.length?`
           <p class="muted">
             ${favorites.length
-              ?"None of your favorites have a game on today's saved schedule."
+              ?"None of your favorite players have a game on today's saved schedule."
               :"Tap ☆ beside a player to save them here."}
           </p>
         `:""}
 
+        <h3>Teams (${teams.length})</h3>
+
+        ${teams.map(item => `
+          <div class="favorite-row">
+            <button class="favorite-open"
+              data-favorite-team-open="${item.id}"
+              data-match="${esc(item.matchups[0].id)}">
+              <span class="identity">
+                <img class="favorite-team-logo"
+                  src="${opponentLogo(item.abbreviation)}"
+                  alt="${esc(item.abbreviation)}"
+                  loading="lazy">
+                <strong>${esc(item.abbreviation)}</strong>
+              </span>
+              <span class="muted">
+                ${item.matchups.map(g =>
+                  esc(g.away)+" @ "+esc(g.home)
+                ).join(" · ")}
+              </span>
+            </button>
+            ${favoriteTeamButton(item.id,item.abbreviation)}
+          </div>
+        `).join("")}
+
+        ${!teams.length?`
+          <p class="muted">
+            ${favoriteTeams.length
+              ?"None of your favorite teams have a game on today's saved schedule."
+              :"Tap ☆ beside a team name to save it here."}
+          </p>
+        `:""}
+
         <p class="muted">
-          ${favorites.length} saved · Listed when their team is scheduled.
+          ${favorites.length} players · ${favoriteTeams.length} teams saved.
+          Listed when their team is scheduled.
         </p>
       </section>
     `;
@@ -459,10 +535,7 @@ input{font-size:16px}
         </thead>
         <tbody>
           ${rows.map(([label,value]) => `
-            <tr>
-              <th scope="row">${label}</th>
-              <td>${value}</td>
-            </tr>
+            <tr><th scope="row">${label}</th><td>${value}</td></tr>
           `).join("")}
         </tbody>
       </table>
@@ -517,11 +590,10 @@ input{font-size:16px}
 
       return `
         <div class="column">
-          <button
-            class="box-hit"
+          <button class="box-hit"
             data-box="${player.id}:${esc(log.id)}"
-            aria-label="${esc(player.name)} game box score, ${esc(log.date)}, ${esc(log.opp)}, ${v} ${esc(key)}"
-          ></button>
+            aria-label="${esc(player.name)} game box score, ${esc(log.date)}, ${esc(log.opp)}, ${v} ${esc(key)}">
+          </button>
 
           ${attempts}
 
@@ -534,12 +606,10 @@ input{font-size:16px}
           </div>
 
           <span class="opponent">
-            <img
-              class="opponent-logo"
+            <img class="opponent-logo"
               src="${opponentLogo(log.opp)}"
               alt="${esc(teamCode(log.opp))}"
-              loading="lazy"
-            >
+              loading="lazy">
             <span class="logo-fallback" hidden>${esc(teamCode(log.opp))}</span>
             <span class="game-date">${gameDate(log.date)}</span>
           </span>
@@ -631,8 +701,7 @@ input{font-size:16px}
 
         <div class="row" style="justify-content:flex-end;margin:9px 0">
           ${["All","Home","Away","Head-to-Head"].map(v => `
-            <button
-              data-venue="${v}"
+            <button data-venue="${v}"
               aria-pressed="${venue===v}"
               ${v==="Head-to-Head"&&!opponentFor(player)?"disabled":""}
             >${v}</button>
@@ -678,8 +747,7 @@ input{font-size:16px}
 
         <div class="actions">
           ${["Over","Under"].map(side => `
-            <button
-              data-pick="${player.id}:${side}"
+            <button data-pick="${player.id}:${side}"
               aria-pressed="${selected(player.id,side)}"
               ${a===null?"disabled":""}
             >${selected(player.id,side)?"✓ ":""}${side}</button>
@@ -724,9 +792,12 @@ input{font-size:16px}
 
           return `
             <article class="team-card">
-              <h3>
-                ${esc(abbreviation)}
-                <span class="muted">· ${location}</span>
+              <h3 class="team-heading">
+                <span>
+                  ${esc(abbreviation)}
+                  <span class="muted">· ${location}</span>
+                </span>
+                ${favoriteTeamButton(id,t?.name||abbreviation)}
               </h3>
 
               <div class="muted">${esc(t?.name||abbreviation)}</div>
@@ -867,25 +938,22 @@ input{font-size:16px}
             `).join("")}
           </div>
 
-          ${team === "All" ? `
+          ${team === "All"?`
             <div class="matchup-columns">
               ${[
                 [g.away_id,g.away],
                 [g.home_id,g.home]
               ].map(([id,abbreviation]) => `
-                <section
-                  class="team-column"
-                  aria-label="${esc(abbreviation)} team stats and players"
-                >
+                <section class="team-column"
+                  aria-label="${esc(abbreviation)} team stats and players">
                   ${teamCards(g,id)}
-
                   ${data.players.filter(p =>
                     p.team_id === id && matches(p)
                   ).map(detail).join("")}
                 </section>
               `).join("")}
             </div>
-          ` : teamCards(g) + data.players.filter(p =>
+          `:teamCards(g)+data.players.filter(p =>
             [g.home_id,g.away_id].includes(p.team_id) &&
             teamCode(p.team)===teamCode(team) &&
             matches(p)
@@ -910,26 +978,66 @@ input{font-size:16px}
     const action = button.dataset;
     const open = button.closest("[data-player]")?.dataset.player;
 
+    if (action.favoriteTeam !== undefined) {
+      event.preventDefault();
+
+      const id = Number(action.favoriteTeam);
+      const index = favoriteTeams.indexOf(id);
+
+      if (index < 0) favoriteTeams.push(id);
+      else favoriteTeams.splice(index,1);
+
+      saveFavoriteIds(
+        favoriteTeamsKey,
+        favoriteTeams,
+        "Favorite teams"
+      );
+
+      render(open);
+      return;
+    }
+
+    if (action.favoriteTeamOpen !== undefined) {
+      const matchup = data.games.find(
+        g => String(g.id) === action.match
+      );
+
+      const id = Number(action.favoriteTeamOpen);
+
+      if (
+        !matchup ||
+        ![matchup.home_id,matchup.away_id].includes(id)
+      ) return;
+
+      game = String(matchup.id);
+      team = id === matchup.home_id
+        ? matchup.home
+        : matchup.away;
+
+      venue = "All";
+      search = "";
+      q("#search").value = "";
+      myPicks = false;
+
+      render();
+      q("#content").scrollIntoView({block:"start"});
+      return;
+    }
+
     if (action.favorite !== undefined) {
       event.preventDefault();
 
       const id = Number(action.favorite);
       const index = favorites.indexOf(id);
 
-      if (index < 0) {
-        favorites.push(id);
-      } else {
-        favorites.splice(index,1);
-      }
+      if (index < 0) favorites.push(id);
+      else favorites.splice(index,1);
 
-      try {
-        localStorage.setItem(favoritesKey,JSON.stringify(favorites));
-      } catch (error) {
-        q("#save-status").hidden = false;
-        q("#save-status").textContent =
-          "Favorites could not be saved on this device; " +
-          "they will last for this session only.";
-      }
+      saveFavoriteIds(
+        favoritesKey,
+        favorites,
+        "Favorite players"
+      );
 
       render(open);
       return;
@@ -1055,7 +1163,11 @@ input{font-size:16px}
 
   async function load() {
     try {
-      const response = await fetch("/api/dashboard",{cache:"no-store"});
+      const response = await fetch(
+        "/api/dashboard",
+        {cache:"no-store"}
+      );
+
       const result = await response.json();
 
       if (!response.ok) throw Error(result.error);
@@ -1082,7 +1194,9 @@ input{font-size:16px}
   load();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+    navigator.serviceWorker.register(
+      "/service-worker.js"
+    ).catch(() => {});
   }
 })();
 </script>
