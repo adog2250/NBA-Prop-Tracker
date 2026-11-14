@@ -611,7 +611,8 @@ html=`<div class="row" style="justify-content:space-between">
 for(const g of data.games){
 const shown=[g.away_id,g.home_id].flatMap(id=>
 data.players.filter(p=>
-p.team_id===id&&matches(p)&&avg(p,stat)!==null&&eligible(p,g.id)
+p.team_id===id&&matches(p)&&avg(p,stat)!==null&&
+eligible(p,g.id)&&starterRank(p,g.id)<2
 ).sort((a,b)=>playerOrder(a,b,g.id)).slice(0,2));
 if(shown.length){
 html+=`<section class="group">
@@ -625,15 +626,8 @@ ${identity(p)}${lineupLabel(p,g.id)}
 </button></div>`).join("")}</div></section>`;
 }
 }
-if(search.trim()){
-const scheduled=new Set(data.games.flatMap(g=>[g.home_id,g.away_id]));
-const others=data.players.filter(p=>
-matches(p)&&avg(p,stat)!==null&&!scheduled.has(p.team_id));
-if(others.length)html+="<h2>Other Players</h2>"+others.map(detail).join("");
-}
 if(!data.games.length&&!search.trim()){
-html+=`<p class="muted">No games are saved for today.
-Search a player to view their saved history.</p>`;
+html+=`<p class="muted">No games are saved for today.</p>`;
 }
 }else{
 const g=data.games.find(g=>String(g.id)===game);
