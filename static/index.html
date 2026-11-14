@@ -29,6 +29,10 @@ h3{font-size:13px;margin:12px 0}
 .tile{background:#283348;border:0;border-radius:8px;padding:12px;text-align:left;width:100%}
 .identity{display:flex;gap:9px;align-items:center;margin-bottom:8px}
 img{width:36px;height:36px;object-fit:cover;border-radius:50%;background:#35435a}
+.matchup-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:start}
+.team-column{min-width:0}
+.team-column .metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+.team-column .metric{min-width:0;padding:9px 5px;overflow-wrap:anywhere}
 .team-cards{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin:12px 0}
 .team-card{min-width:0;background:#1d283b;border:1px solid #3c4b63;border-radius:10px;padding:12px}
 .team-card h3{margin:0 0 3px}
@@ -685,7 +689,7 @@ input{font-size:16px}
     `;
   }
 
-  function teamCards(matchup) {
+  function teamCards(matchup,onlyId) {
     const number = value => Number.isFinite(value)?value.toFixed(1):"—";
     const percent = value => Number.isFinite(value)?value.toFixed(1)+"%":"—";
 
@@ -693,7 +697,8 @@ input{font-size:16px}
       [matchup.away_id,matchup.away,"Away"],
       [matchup.home_id,matchup.home,"Home"]
     ].filter(([id,abbreviation]) =>
-      team === "All" || teamCode(team) === teamCode(abbreviation)
+      (onlyId === undefined || id === onlyId) &&
+      (team === "All" || teamCode(team) === teamCode(abbreviation))
     );
 
     return `
@@ -854,18 +859,38 @@ input{font-size:16px}
       if (g) {
         html = `
           <h2>${esc(g.away)} @ ${esc(g.home)}</h2>
+
           <div class="row">
             ${["All",g.away,g.home].map(t => `
               <button data-team="${esc(t)}"
                 aria-pressed="${t===team}">${esc(t)}</button>
             `).join("")}
           </div>
-          ${teamCards(g)}
-        `+data.players.filter(p =>
-          [g.home_id,g.away_id].includes(p.team_id) &&
-          (team==="All" || teamCode(p.team)===teamCode(team)) &&
-          matches(p)
-        ).map(detail).join("");
+
+          ${team === "All" ? `
+            <div class="matchup-columns">
+              ${[
+                [g.away_id,g.away],
+                [g.home_id,g.home]
+              ].map(([id,abbreviation]) => `
+                <section
+                  class="team-column"
+                  aria-label="${esc(abbreviation)} team stats and players"
+                >
+                  ${teamCards(g,id)}
+
+                  ${data.players.filter(p =>
+                    p.team_id === id && matches(p)
+                  ).map(detail).join("")}
+                </section>
+              `).join("")}
+            </div>
+          ` : teamCards(g) + data.players.filter(p =>
+            [g.home_id,g.away_id].includes(p.team_id) &&
+            teamCode(p.team)===teamCode(team) &&
+            matches(p)
+          ).map(detail).join("")}
+        `;
       }
     }
 
