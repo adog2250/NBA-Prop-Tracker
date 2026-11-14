@@ -1,4 +1,4 @@
-"""ZenStats: player history, team statistics, box scores, and PWA."""
+"""ZenStats: player history, availability, team stats, and PWA."""
 
 import json
 import logging
@@ -313,6 +313,38 @@ def make_log(row):
     }
 
 
+def attach_availability(players, rows):
+    latest = None
+
+    for (
+        gid,
+        pid,
+        tid,
+        status,
+        starter,
+        source,
+        checked,
+    ) in rows:
+        player = players.get(pid)
+
+        if player is None or player["team_id"] != tid:
+            continue
+
+        player["availability"][str(gid)] = {
+            "injury_status": status,
+            "is_starter": starter,
+            "starter_source": source,
+            "checked_at": checked,
+        }
+
+        if checked and (
+            latest is None or checked > latest
+        ):
+            latest = checked
+
+    return latest
+
+
 def dashboard(day):
     first, last = season_bounds(day)
     history_first = date(first.year - 1, 10, 1)
@@ -380,11 +412,11 @@ def dashboard(day):
                 "weight": row[6],
                 "logs": [],
                 "h2h_logs": [],
+                "availability": {},
             }
             for row in cur.fetchall()
         }
 
-        # Current-season games for averages and All/Home/Away.
         cur.execute(
             LOG_SELECT + """
             WHERE p.is_active = TRUE
@@ -411,8 +443,6 @@ def dashboard(day):
             ):
                 updated = stamp
 
-        # Previous-season meetings against today's opponents.
-        # Historical team membership comes from that game's box score.
         cur.execute(
             """
             WITH targets AS (
@@ -461,6 +491,29 @@ def dashboard(day):
                 players[row[0]]["h2h_logs"].append(log)
 
         teams = team_stats(cur, first, last, day)
+        availability_updated = None
+
+        if games:
+            cur.execute(
+                """
+                SELECT
+                    game_id,
+                    player_id,
+                    team_id,
+                    injury_status,
+                    is_starter,
+                    starter_source,
+                    checked_at
+                FROM game_player_availability
+                WHERE game_id = ANY(%s::text[])
+                """,
+                ([str(g["id"]) for g in games],),
+            )
+
+            availability_updated = attach_availability(
+                players,
+                cur.fetchall(),
+            )
 
     return {
         "date": day.isoformat(),
@@ -473,6 +526,7 @@ def dashboard(day):
         "players": list(players.values()),
         "team_stats": teams,
         "updated_at": updated,
+        "availability_updated_at": availability_updated,
     }
 
 
