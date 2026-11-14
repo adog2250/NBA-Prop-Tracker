@@ -57,12 +57,13 @@ summary::after{content:"⌄";float:right}
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:15px 0}
 .metric{background:#2b374c;border-radius:7px;padding:11px;text-align:center}
 .metric strong{display:block;margin-top:5px}
-.plot{position:relative;height:220px;padding:25px 4px 40px;margin:20px 0 8px}
+.plot{position:relative;height:238px;padding:25px 4px 58px;margin:20px 0 8px}
 .bars{height:100%;display:flex;gap:5px;align-items:end;background:repeating-linear-gradient(to top,transparent 0,transparent 37px,#ffffff15 38px)}
 .column{position:relative;flex:1;height:100%;display:flex;align-items:end;min-width:0}
 .bar{width:100%;position:relative;min-height:2px}
 .number{position:absolute;bottom:100%;left:0;right:0;text-align:center;font-size:11px;font-weight:500}
 .opponent{position:absolute;top:100%;left:0;right:0;padding-top:7px;text-align:center;font-size:10px;color:#b2bed2;line-height:13px}
+.opponent-logo{display:block;width:min(22px,100%);height:22px;object-fit:contain;border-radius:0;background:transparent;margin:0 auto 3px}
 .game-date{display:block;font-size:8px;white-space:nowrap;color:#afbdd1}
 .average{position:absolute;left:4px;right:4px;border-top:2px solid white;pointer-events:none}
 .average span{position:absolute;right:0;bottom:0;font-size:11px;background:#1d283b}
@@ -170,9 +171,7 @@ input{font-size:16px}
     );
 
     if (Array.isArray(stored)) {
-      favorites = [
-        ...new Set(stored.filter(Number.isInteger))
-      ];
+      favorites = [...new Set(stored.filter(Number.isInteger))];
     }
   } catch (error) {
     favorites = [];
@@ -215,8 +214,7 @@ input{font-size:16px}
     const fields = combinations[key] || [key];
 
     return fields.every(f =>
-      typeof log[f] === "number" &&
-      Number.isFinite(log[f])
+      typeof log[f] === "number" && Number.isFinite(log[f])
     )
       ? fields.reduce((sum,f) => sum + log[f],0)
       : null;
@@ -241,6 +239,22 @@ input{font-size:16px}
       GS:"GSW",NY:"NYK",SA:"SAS",
       NO:"NOP",UTAH:"UTA",WSH:"WAS"
     })[code] || code;
+  }
+
+  function opponentLogo(value) {
+    const code = teamCode(value);
+
+    const slug = ({
+      GSW:"gs",
+      NYK:"ny",
+      SAS:"sa",
+      NOP:"no",
+      UTA:"utah",
+      WAS:"wsh"
+    })[code] || code.toLowerCase();
+
+    return "https://a.espncdn.com/i/teamlogos/nba/500/" +
+      encodeURIComponent(slug) + ".png";
   }
 
   function opponentFor(player) {
@@ -481,7 +495,7 @@ input{font-size:16px}
       )
     )*1.2;
 
-    const bars = games.map((log,index) => {
+    const bars = games.map(log => {
       const v = val(log,key);
 
       const attempts = key==="3PM" && Number.isFinite(log["3PA"])
@@ -504,7 +518,9 @@ input{font-size:16px}
             data-box="${player.id}:${esc(log.id)}"
             aria-label="${esc(player.name)} game box score, ${esc(log.date)}, ${esc(log.opp)}, ${v} ${esc(key)}"
           ></button>
+
           ${attempts}
+
           <div class="bar" style="
             height:${100*v/max}%;
             ${key==="3PM"?"width:62%;margin:auto auto 0;":""}
@@ -512,8 +528,15 @@ input{font-size:16px}
           ">
             <span class="number">${v}</span>
           </div>
+
           <span class="opponent">
-            ${games.length<=10?esc(log.opp):index+1}
+            <img
+              class="opponent-logo"
+              src="${opponentLogo(log.opp)}"
+              alt="${esc(teamCode(log.opp))}"
+              loading="lazy"
+            >
+            <span class="logo-fallback" hidden>${esc(teamCode(log.opp))}</span>
             <span class="game-date">${gameDate(log.date)}</span>
           </span>
         </div>
@@ -524,7 +547,7 @@ input{font-size:16px}
       <div class="plot" role="group"
         aria-label="Recent ${esc(key)}. Select a bar for its game box score.">
         <div class="bars">${bars}</div>
-        <div class="average" style="bottom:calc(40px + 155px * ${a/max});">
+        <div class="average" style="bottom:calc(58px + 155px * ${a/max});">
           <span>AVG ${fmt(a)}</span>
         </div>
       </div>
@@ -984,6 +1007,21 @@ input{font-size:16px}
       render();
     }
   });
+
+  q("main").addEventListener("error",event => {
+    const image = event.target;
+
+    if (
+      image instanceof HTMLImageElement &&
+      image.classList.contains("opponent-logo")
+    ) {
+      image.hidden = true;
+
+      if (image.nextElementSibling) {
+        image.nextElementSibling.hidden = false;
+      }
+    }
+  },true);
 
   q("#search").addEventListener("input",event => {
     search=event.target.value;
