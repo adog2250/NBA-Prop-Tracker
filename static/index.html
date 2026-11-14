@@ -10,7 +10,6 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>ZenStats</title>
-
 <style>
 :root{color-scheme:dark}
 body{margin:0;background:#000;color:#f4f5fb;font:13px system-ui,sans-serif}
@@ -105,1099 +104,728 @@ input{font-size:16px}
 }
 </style>
 </head>
-
 <body>
 <main>
 <header>
-  <strong><span class="green">▥</span> ZenStats</strong>
-  <button id="picks">My Picks (0)</button>
+<strong><span class="green">▥</span> ZenStats</strong>
+<button id="picks">My Picks (0)</button>
 </header>
-
 <h2>Today's Games</h2>
 <p id="status" class="muted" role="status">Loading saved NBA data…</p>
 <nav id="nav" class="row" aria-label="Games"></nav>
 <input id="search" type="search" placeholder="Search players…" aria-label="Search players">
 <p id="save-status" class="muted" role="status" hidden></p>
-
 <div class="app-columns">
-  <div id="content"></div>
-  <aside id="favorites" aria-label="Favorite players and teams scheduled today"></aside>
+<div id="content"></div>
+<aside id="favorites" aria-label="Favorite players and teams scheduled today"></aside>
 </div>
-
 <dialog id="box-dialog" aria-labelledby="box-title">
-  <div class="row" style="justify-content:space-between">
-    <h2 id="box-title">Player box score</h2>
-    <button data-close-box>Close</button>
-  </div>
-  <div id="box-content"></div>
+<div class="row" style="justify-content:space-between">
+<h2 id="box-title">Player box score</h2>
+<button data-close-box>Close</button>
+</div>
+<div id="box-content"></div>
 </dialog>
 </main>
-
 <script>
 (() => {
-  const q = selector => document.querySelector(selector);
-  const cats = ["PTS","REB","AST","3PM","PR","PA","RA","PRA","STL","BLK"];
-
-  let data = {players:[],games:[],team_stats:{}};
-  let game = "all";
-  let team = "All";
-  let stat = "PTS";
-  let n = 5;
-  let venue = "All";
-  let minutes = false;
-  let search = "";
-  let myPicks = false;
-  let picks = [];
-  let favorites = [];
-  let favoriteTeams = [];
-
-  const storageKey = "nba-prop-tracker-picks-v1";
-  const favoritesKey = "zenstats-favorite-players-v1";
-  const favoriteTeamsKey = "zenstats-favorite-teams-v1";
-
-  const esc = value => String(value ?? "").replace(
-    /[&<>"']/g,
-    c => ({
-      "&":"&amp;",
-      "<":"&lt;",
-      ">":"&gt;",
-      '"':"&quot;",
-      "'":"&#39;"
-    }[c])
-  );
-
-  function storageMessage() {
-    q("#save-status").hidden = false;
-    q("#save-status").textContent =
-      "Picks could not be saved on this device. " +
-      "They will last for this session only.";
-  }
-
-  function loadFavoriteIds(key) {
-    try {
-      const stored = JSON.parse(localStorage.getItem(key) || "[]");
-      return Array.isArray(stored)
-        ? [...new Set(stored.filter(Number.isInteger))]
-        : [];
-    } catch (error) {
-      return [];
-    }
-  }
-
-  favorites = loadFavoriteIds(favoritesKey);
-  favoriteTeams = loadFavoriteIds(favoriteTeamsKey);
-
-  try {
-    const saved = JSON.parse(
-      localStorage.getItem(storageKey) || "[]"
-    );
-
-    if (Array.isArray(saved)) {
-      picks = saved.filter(p =>
-        Number.isInteger(p.id) &&
-        typeof p.name === "string" &&
-        cats.includes(p.stat) &&
-        ["Over","Under"].includes(p.side) &&
-        Number.isFinite(p.average)
-      );
-    }
-  } catch (error) {
-    storageMessage();
-  }
-
-  function save() {
-    try {
-      localStorage.setItem(storageKey,JSON.stringify(picks));
-    } catch (error) {
-      storageMessage();
-    }
-  }
-
-  function saveFavoriteIds(key,ids,label) {
-    try {
-      localStorage.setItem(key,JSON.stringify(ids));
-    } catch (error) {
-      q("#save-status").hidden = false;
-      q("#save-status").textContent =
-        label+" could not be saved on this device; " +
-        "they will last for this session only.";
-    }
-  }
-
-  function val(log,key) {
-    const combinations = {
-      PR:["PTS","REB"],
-      PA:["PTS","AST"],
-      RA:["REB","AST"],
-      PRA:["PTS","REB","AST"]
-    };
-
-    const fields = combinations[key] || [key];
-
-    return fields.every(f =>
-      typeof log[f] === "number" && Number.isFinite(log[f])
-    )
-      ? fields.reduce((sum,f) => sum + log[f],0)
-      : null;
-  }
-
-  function avg(player,key) {
-    const values = player.logs
-      .map(log => val(log,key))
-      .filter(v => v !== null);
-
-    return values.length
-      ? values.reduce((a,b) => a+b,0)/values.length
-      : null;
-  }
-
-  const fmt = v => v === null ? "—" : v.toFixed(1);
-
-  function teamCode(value) {
-    const code = String(value || "").toUpperCase();
-
-    return ({
-      GS:"GSW",NY:"NYK",SA:"SAS",
-      NO:"NOP",UTAH:"UTA",WSH:"WAS"
-    })[code] || code;
-  }
-
-  function opponentLogo(value) {
-    const code = teamCode(value);
-
-    const slug = ({
-      GSW:"gs",NYK:"ny",SAS:"sa",
-      NOP:"no",UTA:"utah",WAS:"wsh"
-    })[code] || code.toLowerCase();
-
-    return "https://a.espncdn.com/i/teamlogos/nba/500/" +
-      encodeURIComponent(slug) + ".png";
-  }
-
-  function opponentFor(player) {
-    const matchup = data.games.find(g => String(g.id) === game);
-
-    if (!matchup) return null;
-    if (player.team_id === matchup.home_id) return matchup.away;
-    if (player.team_id === matchup.away_id) return matchup.home;
-
-    return null;
-  }
-
-  function chosen(player,key) {
-    const opponent = opponentFor(player);
-
-    const pool = venue === "Head-to-Head"
-      ? [...player.logs, ...(player.h2h_logs || [])]
-      : player.logs;
-
-    const unique = [
-      ...new Map(pool.map(log => [String(log.id),log])).values()
-    ];
-
-    return unique.filter(log => {
-      if (val(log,key) === null) return false;
-
-      if (venue === "Head-to-Head") {
-        return opponent !== null &&
-          teamCode(log.opp) === teamCode(opponent);
-      }
-
-      return venue === "All" ||
-        log.home === (venue === "Home");
-    }).sort(
-      (a,b) => String(b.date).localeCompare(String(a.date))
-    ).slice(0,n);
-  }
-
-  const matches = player =>
-    player.name.toLowerCase().includes(search.trim().toLowerCase());
-
-  const selected = (id,side) => picks.some(p =>
-    p.id === id && p.stat === stat && p.side === side
-  );
-
-  function favoriteButton(player) {
-    const active = favorites.includes(player.id);
-
-    return `
-      <button type="button" class="favorite-star"
-        data-favorite="${player.id}"
-        aria-pressed="${active}"
-        aria-label="${active?"Remove ":"Add "}${esc(player.name)} ${active?"from":"to"} favorites"
-      >${active?"★":"☆"}</button>
-    `;
-  }
-
-  function favoriteTeamButton(id,name) {
-    const active = favoriteTeams.includes(id);
-
-    return `
-      <button type="button" class="favorite-star"
-        data-favorite-team="${id}"
-        aria-pressed="${active}"
-        aria-label="${active?"Remove ":"Add "}${esc(name)} ${active?"from":"to"} favorite teams"
-      >${active?"★":"☆"}</button>
-    `;
-  }
-
-  function scheduledFavoriteTeams() {
-    const teams = new Map();
-
-    for (const matchup of data.games) {
-      for (const [id,abbreviation] of [
-        [matchup.away_id,matchup.away],
-        [matchup.home_id,matchup.home]
-      ]) {
-        if (!favoriteTeams.includes(id)) continue;
-
-        if (!teams.has(id)) {
-          teams.set(id,{id,abbreviation,matchups:[]});
-        }
-
-        teams.get(id).matchups.push(matchup);
-      }
-    }
-
-    return [...teams.values()];
-  }
-
-  function identity(player) {
-    player = {
-      ...player,
-      ...(data.players.find(p => p.id === player.id) || {})
-    };
-
-    const bio = [
-      player.position,
-      player.height,
-      player.weight
-    ].filter(Boolean).join(" · ");
-
-    const url = player.id < 0
-      ? `https://a.espncdn.com/i/headshots/nba/players/full/${Math.abs(player.id)}.png`
-      : `https://cdn.nba.com/headshots/nba/latest/260x190/${player.id}.png`;
-
-    return `
-      <span class="identity">
-        <img src="${url}" alt="${esc(player.name)}" loading="lazy">
-        <span>
-          <span class="muted">${esc(player.team)}</span><br>
-          <strong>${esc(player.name)}</strong>
-          ${bio?`<br><span class="muted">${esc(bio)}</span>`:""}
-        </span>
-      </span>
-    `;
-  }
-
-  function renderFavorites() {
-    const scheduled = data.players
-      .filter(player => favorites.includes(player.id))
-      .map(player => ({
-        player,
-        matchups:data.games.filter(g =>
-          [g.home_id,g.away_id].includes(player.team_id)
-        )
-      }))
-      .filter(item => item.matchups.length);
-
-    const teams = scheduledFavoriteTeams();
-
-    q("#favorites").innerHTML = `
-      <section class="favorite-panel">
-        <h2>Favorites <span class="muted">Today</span></h2>
-
-        <h3>Players (${scheduled.length})</h3>
-
-        ${scheduled.map(({player,matchups}) => `
-          <div class="favorite-row">
-            <button class="favorite-open"
-              data-favorite-open="${player.id}"
-              data-match="${esc(matchups[0].id)}">
-              ${identity(player)}
-              <span class="muted">
-                ${matchups.map(g =>
-                  esc(g.away)+" @ "+esc(g.home)
-                ).join(" · ")}
-              </span>
-            </button>
-            ${favoriteButton(player)}
-          </div>
-        `).join("")}
-
-        ${!scheduled.length?`
-          <p class="muted">
-            ${favorites.length
-              ?"None of your favorite players have a game on today's saved schedule."
-              :"Tap ☆ beside a player to save them here."}
-          </p>
-        `:""}
-
-        <h3>Teams (${teams.length})</h3>
-
-        ${teams.map(item => `
-          <div class="favorite-row">
-            <button class="favorite-open"
-              data-favorite-team-open="${item.id}"
-              data-match="${esc(item.matchups[0].id)}">
-              <span class="identity">
-                <img class="favorite-team-logo"
-                  src="${opponentLogo(item.abbreviation)}"
-                  alt="${esc(item.abbreviation)}"
-                  loading="lazy">
-                <strong>${esc(item.abbreviation)}</strong>
-              </span>
-              <span class="muted">
-                ${item.matchups.map(g =>
-                  esc(g.away)+" @ "+esc(g.home)
-                ).join(" · ")}
-              </span>
-            </button>
-            ${favoriteTeamButton(item.id,item.abbreviation)}
-          </div>
-        `).join("")}
-
-        ${!teams.length?`
-          <p class="muted">
-            ${favoriteTeams.length
-              ?"None of your favorite teams have a game on today's saved schedule."
-              :"Tap ☆ beside a team name to save it here."}
-          </p>
-        `:""}
-
-        <p class="muted">
-          ${favorites.length} players · ${favoriteTeams.length} teams saved.
-          Listed when their team is scheduled.
-        </p>
-      </section>
-    `;
-  }
-
-  function trend(player) {
-    const a = avg(player,stat);
-    const games = player.logs.filter(g => val(g,stat) !== null).slice(0,n);
-
-    if (a === null) {
-      return '<span class="muted">No saved history</span>';
-    }
-
-    const above = games.filter(g => val(g,stat) > a+1e-9).length;
-    const below = games.filter(g => val(g,stat) < a-1e-9).length;
-
-    if (above === below) {
-      return `<span class="muted">Above / Below tied · ${above}/${games.length} each</span>`;
-    }
-
-    return `
-      <span class="${above>below?"green":"red"}">
-        ${above>below?"Above":"Below"}
-        ${Math.max(above,below)}/${games.length}
-      </span>
-    `;
-  }
-
-  function matchupLabel(log) {
-    return log.away_team && log.home_team
-      ? log.away_team+" @ "+log.home_team
-      : (log.home?"Home vs ":"Away at ")+log.opp;
-  }
-
-  function showBox(player,log) {
-    const number = v => Number.isFinite(v)?String(v):"—";
-    const pair = (made,attempted) => number(made)+" / "+number(attempted);
-
-    const rows = [
-      ["Minutes",Number.isFinite(log.MIN)?log.MIN.toFixed(1):"—"],
-      ["Points",number(log.PTS)],
-      ["Rebounds",number(log.REB)],
-      ["Assists",number(log.AST)],
-      ["3PT made / attempted",pair(log["3PM"],log["3PA"])],
-      ["Steals",number(log.STL)],
-      ["Blocks",number(log.BLK)],
-      ["Turnovers",number(log.TOV)],
-      ["FG made / attempted",pair(log.FGM,log.FGA)],
-      ["FT made / attempted",pair(log.FTM,log.FTA)],
-      ["Personal fouls",number(log.PF)],
-      ["Offensive rebounds",number(log.OREB)],
-      ["Defensive rebounds",number(log.DREB)]
-    ];
-
-    q("#box-title").textContent = player.name+" · Box Score";
-
-    q("#box-content").innerHTML = identity(player)+`
-      <p class="muted">${esc(log.date)} · ${esc(matchupLabel(log))}</p>
-      <table class="box-table">
-        <thead>
-          <tr>
-            <th scope="col">Stat</th>
-            <th scope="col" style="text-align:right">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(([label,value]) => `
-            <tr><th scope="row">${label}</th><td>${value}</td></tr>
-          `).join("")}
-        </tbody>
-      </table>
-      <p class="muted">— means unavailable in the saved data.</p>
-    `;
-
-    q("#box-dialog").showModal();
-  }
-
-  function gameDate(value) {
-    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ""));
-
-    return match
-      ? `${Number(match[2])}/${Number(match[3])}`
-      : "";
-  }
-
-  function chart(player) {
-    const key = minutes?"MIN":stat;
-    const a = avg(player,key);
-    const games = chosen(player,key).slice().reverse();
-
-    if (!games.length) {
-      return `<p class="muted">${
-        venue === "Head-to-Head"
-          ?"No saved head-to-head games against "+esc(opponentFor(player)||"this opponent")+"."
-          :"No saved games for this selection."
-      }</p>`;
-    }
-
-    const max = Math.max(
-      1,a,...games.map(g =>
-        key==="3PM"?Math.max(g["3PA"]??0,g[key]):val(g,key)
-      )
-    )*1.2;
-
-    const bars = games.map(log => {
-      const v = val(log,key);
-
-      const attempts = key==="3PM" && Number.isFinite(log["3PA"])
-        ? `
-          <div style="
-            position:absolute;bottom:0;width:100%;
-            height:${100*log["3PA"]/max}%;background:#596982;
-          ">
-            <span class="number" style="color:#bbc8dd">${log["3PA"]}</span>
-          </div>
-        `
-        :"";
-
-      const color = v>a+1e-9?"#97ff42":v<a-1e-9?"#ff667e":"#efd16a";
-
-      return `
-        <div class="column">
-          <button class="box-hit"
-            data-box="${player.id}:${esc(log.id)}"
-            aria-label="${esc(player.name)} game box score, ${esc(log.date)}, ${esc(log.opp)}, ${v} ${esc(key)}">
-          </button>
-
-          ${attempts}
-
-          <div class="bar" style="
-            height:${100*v/max}%;
-            ${key==="3PM"?"width:62%;margin:auto auto 0;":""}
-            background:${color};
-          ">
-            <span class="number">${v}</span>
-          </div>
-
-          <span class="opponent">
-            <img class="opponent-logo"
-              src="${opponentLogo(log.opp)}"
-              alt="${esc(teamCode(log.opp))}"
-              loading="lazy">
-            <span class="logo-fallback" hidden>${esc(teamCode(log.opp))}</span>
-            <span class="game-date">${gameDate(log.date)}</span>
-          </span>
-        </div>
-      `;
-    }).join("");
-
-    return `
-      <div class="plot" role="group"
-        aria-label="Recent ${esc(key)}. Select a bar for its game box score.">
-        <div class="bars">${bars}</div>
-        <div class="average" style="bottom:calc(58px + 155px * ${a/max});">
-          <span>AVG ${fmt(a)}</span>
-        </div>
-      </div>
-      <p class="muted">
-        ${key==="3PM"?"Muted background: attempted · Colored bar: made<br>":""}
-        Green: above · Red: below · Yellow: equal · White: season average
-      </p>
-      ${key==="3PM" && games.some(g => g["3PA"]===null)
-        ?'<p class="muted">Attempts unavailable for some games; no attempts bar is shown for those games.</p>'
-        :""}
-    `;
-  }
-
-  function headToHeadTable(player,games,key) {
-    if (venue !== "Head-to-Head" || !games.length) return "";
-
-    return `
-      <div style="overflow-x:auto">
-        <table class="box-table">
-          <thead>
-            <tr>
-              <th scope="col">Date</th>
-              <th scope="col">Game</th>
-              <th scope="col">${esc(key)}</th>
-              <th scope="col">Box score</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${games.map(log => `
-              <tr>
-                <th scope="row">${esc(log.date)}</th>
-                <td>${esc(matchupLabel(log))}</td>
-                <td>${val(log,key)}</td>
-                <td>
-                  <button data-box="${player.id}:${esc(log.id)}">View</button>
-                </td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-    `;
-  }
-
-  function detail(player) {
-    const key = minutes?"MIN":stat;
-    const games = chosen(player,key);
-    const a = avg(player,stat);
-
-    const recent = games.length
-      ?fmt(games.reduce((s,g) => s+val(g,key),0)/games.length)
-      :"—";
-
-    return `
-      <details data-player="${player.id}">
-        <summary>
-          <span class="player-heading">
-            ${identity(player)}
-            ${favoriteButton(player)}
-          </span>
-          <span class="muted">
-            PTS ${fmt(avg(player,"PTS"))} ·
-            REB ${fmt(avg(player,"REB"))} ·
-            AST ${fmt(avg(player,"AST"))}
-          </span>
-        </summary>
-
-        <div class="row" style="margin-top:12px">
-          ${cats.map(k => `
-            <button data-stat="${k}" aria-pressed="${stat===k}">${k}</button>
-          `).join("")}
-        </div>
-
-        <div style="text-align:right;margin:9px 0">
-          <button data-minutes>${minutes?"Stat Graph":"Minutes Graph"}</button>
-        </div>
-
-        <div class="row" style="justify-content:flex-end;margin:9px 0">
-          ${["All","Home","Away","Head-to-Head"].map(v => `
-            <button data-venue="${v}"
-              aria-pressed="${venue===v}"
-              ${v==="Head-to-Head"&&!opponentFor(player)?"disabled":""}
-            >${v}</button>
-          `).join("")}
-        </div>
-
-        ${venue === "Head-to-Head"?`
-          <p class="muted">
-            Against ${esc(opponentFor(player)||"the selected opponent")}
-            · ${esc(data.h2h_seasons||"current and previous season")}.
-            Most recent saved meetings; season average stays current-season only.
-          </p>
-        `:""}
-
-        <h3>Performance</h3>
-
-        <div class="row">
-          <span class="muted">Last</span>
-          ${[5,10,20].map(v => `
-            <button data-window="${v}" aria-pressed="${n===v}">${v}</button>
-          `).join("")}
-        </div>
-
-        <div class="metrics">
-          <div class="metric">
-            <span class="muted">Season average</span>
-            <strong>${fmt(avg(player,key))}</strong>
-          </div>
-          <div class="metric">
-            <span class="muted">Last ${n} average</span>
-            <strong>${recent}</strong>
-          </div>
-          <div class="metric">
-            <span class="muted">Games</span>
-            <strong>${games.length}</strong>
-          </div>
-        </div>
-
-        ${chart(player)}
-        ${headToHeadTable(player,games,key)}
-
-        <h3>Add to My Picks</h3>
-
-        <div class="actions">
-          ${["Over","Under"].map(side => `
-            <button data-pick="${player.id}:${side}"
-              aria-pressed="${selected(player.id,side)}"
-              ${a===null?"disabled":""}
-            >${selected(player.id,side)?"✓ ":""}${side}</button>
-          `).join("")}
-        </div>
-      </details>
-    `;
-  }
-
-  function teamCards(matchup,onlyId) {
-    const number = value => Number.isFinite(value)?value.toFixed(1):"—";
-    const percent = value => Number.isFinite(value)?value.toFixed(1)+"%":"—";
-
-    const shown = [
-      [matchup.away_id,matchup.away,"Away"],
-      [matchup.home_id,matchup.home,"Home"]
-    ].filter(([id,abbreviation]) =>
-      (onlyId === undefined || id === onlyId) &&
-      (team === "All" || teamCode(team) === teamCode(abbreviation))
-    );
-
-    return `
-      <section class="team-cards"
-        style="${shown.length===1?"grid-template-columns:minmax(0,1fr)":""}"
-        aria-label="Current-season team statistics">
-
-        ${shown.map(([id,abbreviation,location]) => {
-          const t = data.team_stats?.[String(id)];
-
-          const rows = [
-            ["Record",t?`${t.wins}–${t.losses}`:"—"],
-            ["Points / game",number(t?.points)],
-            ["Points allowed",number(t?.points_allowed)],
-            ["Rebounds / game",number(t?.rebounds)],
-            ["Rebounds allowed",number(t?.rebounds_allowed)],
-            ["Assists / game",number(t?.assists)],
-            ["FG%",percent(t?.fg_pct)],
-            ["3PT%",percent(t?.three_pct)],
-            ["FT%",percent(t?.ft_pct)],
-            ["Turnovers / game",number(t?.turnovers)]
-          ];
-
-          return `
-            <article class="team-card">
-              <h3 class="team-heading">
-                <span>
-                  ${esc(abbreviation)}
-                  <span class="muted">· ${location}</span>
-                </span>
-                ${favoriteTeamButton(id,t?.name||abbreviation)}
-              </h3>
-
-              <div class="muted">${esc(t?.name||abbreviation)}</div>
-
-              ${rows.map(([label,value]) => `
-                <div class="team-stat-row">
-                  <span>${label}</span>
-                  <strong>${value}</strong>
-                </div>
-              `).join("")}
-
-              <p class="muted">
-                ${t
-                  ?`${esc(data.season)} · ${t.games} saved final games`
-                  :"Team statistics not available yet."}
-              </p>
-
-              ${t && (
-                t.box_games < t.games ||
-                t.opponent_box_games < t.games
-              )?`
-                <p class="muted">
-                  Box-score coverage:
-                  ${t.box_games}/${t.games} team ·
-                  ${t.opponent_box_games}/${t.games} opponent.
-                  Missing totals are excluded.
-                </p>
-              `:""}
-            </article>
-          `;
-        }).join("")}
-      </section>
-    `;
-  }
-
-  function render(open) {
-    q("#nav").innerHTML = `
-      <button data-game="all"
-        aria-pressed="${game==="all"&&!myPicks}">All Games</button>
-    `+data.games.map(g => `
-      <button data-game="${esc(g.id)}"
-        aria-pressed="${game===String(g.id)&&!myPicks}">
-        ${esc(g.away)} @ ${esc(g.home)}
-      </button>
-    `).join("");
-
-    q("#picks").textContent =
-      `${myPicks?"← Back · ":""}My Picks (${picks.length})`;
-
-    q("#search").hidden = myPicks;
-
-    let html = "";
-
-    if (myPicks) {
-      html = "<h2>My Picks</h2>"+(
-        picks.length
-          ?picks.map((p,i) => `
-            <div class="group">
-              ${identity(p)}
-              <p>${p.side} season ${p.stat} average · ${fmt(p.average)}</p>
-              <button data-remove="${i}">Remove</button>
-            </div>
-          `).join("")
-          :'<p class="muted">No picks saved.</p>'
-      );
-    } else if (game==="all") {
-      html = `
-        <div class="row" style="justify-content:space-between">
-          <h2>Above & Below Season Average</h2>
-          <span class="muted">Last ${n} · ${stat}</span>
-        </div>
-      `;
-
-      for (const g of data.games) {
-        const shown = [g.away_id,g.home_id].flatMap(id =>
-          data.players.filter(p =>
-            p.team_id===id && matches(p) && avg(p,stat)!==null
-          ).slice(0,2)
-        );
-
-        if (shown.length) {
-          html += `
-            <section class="group">
-              <h3>${esc(g.away)} @ ${esc(g.home)}</h3>
-              <div class="grid">
-                ${shown.map(p => `
-                  <div class="tile">
-                    <div class="tile-star-row">${favoriteButton(p)}</div>
-                    <button class="tile-open"
-                      data-open="${p.id}" data-match="${esc(g.id)}">
-                      ${identity(p)}
-                      <p class="muted">
-                        Season ${stat} avg · ${fmt(avg(p,stat))}
-                      </p>
-                      <strong>${trend(p)}</strong>
-                    </button>
-                  </div>
-                `).join("")}
-              </div>
-            </section>
-          `;
-        }
-      }
-
-      if (search.trim()) {
-        const scheduled = new Set(
-          data.games.flatMap(g => [g.home_id,g.away_id])
-        );
-
-        const others = data.players.filter(p =>
-          matches(p) && avg(p,stat)!==null && !scheduled.has(p.team_id)
-        );
-
-        if (others.length) {
-          html += "<h2>Other Players</h2>"+others.map(detail).join("");
-        }
-      }
-
-      if (!data.games.length && !search.trim()) {
-        html += `
-          <p class="muted">
-            No games are saved for today.
-            Search a player to view their saved history.
-          </p>
-        `;
-      }
-    } else {
-      const g = data.games.find(g => String(g.id)===game);
-
-      if (g) {
-        html = `
-          <h2>${esc(g.away)} @ ${esc(g.home)}</h2>
-
-          <div class="row">
-            ${["All",g.away,g.home].map(t => `
-              <button data-team="${esc(t)}"
-                aria-pressed="${t===team}">${esc(t)}</button>
-            `).join("")}
-          </div>
-
-          ${team === "All"?`
-            <div class="matchup-columns">
-              ${[
-                [g.away_id,g.away],
-                [g.home_id,g.home]
-              ].map(([id,abbreviation]) => `
-                <section class="team-column"
-                  aria-label="${esc(abbreviation)} team stats and players">
-                  ${teamCards(g,id)}
-                  ${data.players.filter(p =>
-                    p.team_id === id && matches(p)
-                  ).map(detail).join("")}
-                </section>
-              `).join("")}
-            </div>
-          `:teamCards(g)+data.players.filter(p =>
-            [g.home_id,g.away_id].includes(p.team_id) &&
-            teamCode(p.team)===teamCode(team) &&
-            matches(p)
-          ).map(detail).join("")}
-        `;
-      }
-    }
-
-    q("#content").innerHTML = html;
-    renderFavorites();
-
-    if (open!==undefined) {
-      const section = q(`[data-player="${open}"]`);
-      if (section) section.open=true;
-    }
-  }
-
-  q("main").addEventListener("click",event => {
-    const button = event.target.closest("button");
-    if (!button) return;
-
-    const action = button.dataset;
-    const open = button.closest("[data-player]")?.dataset.player;
-
-    if (action.favoriteTeam !== undefined) {
-      event.preventDefault();
-
-      const id = Number(action.favoriteTeam);
-      const index = favoriteTeams.indexOf(id);
-
-      if (index < 0) favoriteTeams.push(id);
-      else favoriteTeams.splice(index,1);
-
-      saveFavoriteIds(
-        favoriteTeamsKey,
-        favoriteTeams,
-        "Favorite teams"
-      );
-
-      render(open);
-      return;
-    }
-
-    if (action.favoriteTeamOpen !== undefined) {
-      const matchup = data.games.find(
-        g => String(g.id) === action.match
-      );
-
-      const id = Number(action.favoriteTeamOpen);
-
-      if (
-        !matchup ||
-        ![matchup.home_id,matchup.away_id].includes(id)
-      ) return;
-
-      game = String(matchup.id);
-      team = id === matchup.home_id
-        ? matchup.home
-        : matchup.away;
-
-      venue = "All";
-      search = "";
-      q("#search").value = "";
-      myPicks = false;
-
-      render();
-      q("#content").scrollIntoView({block:"start"});
-      return;
-    }
-
-    if (action.favorite !== undefined) {
-      event.preventDefault();
-
-      const id = Number(action.favorite);
-      const index = favorites.indexOf(id);
-
-      if (index < 0) favorites.push(id);
-      else favorites.splice(index,1);
-
-      saveFavoriteIds(
-        favoritesKey,
-        favorites,
-        "Favorite players"
-      );
-
-      render(open);
-      return;
-    }
-
-    if (action.favoriteOpen !== undefined) {
-      game = action.match;
-      team = "All";
-      venue = "All";
-      search = "";
-      q("#search").value = "";
-      myPicks = false;
-
-      render(action.favoriteOpen);
-
-      q(`[data-player="${action.favoriteOpen}"]`)?.scrollIntoView({
-        block:"start"
-      });
-
-      return;
-    }
-
-    if (action.box) {
-      const [id,gameId] = action.box.split(":");
-      const player = data.players.find(p => p.id===Number(id));
-
-      const log = player && [
-        ...player.logs,
-        ...(player.h2h_logs || [])
-      ].find(log => String(log.id) === gameId);
-
-      if (log) showBox(player,log);
-      return;
-    }
-
-    if ("closeBox" in action) {
-      q("#box-dialog").close();
-      return;
-    }
-
-    if (button.id==="picks") {
-      myPicks=!myPicks;
-      render();
-    } else if (action.game) {
-      game=action.game;
-      team="All";
-      venue="All";
-      myPicks=false;
-      render();
-    } else if (action.open) {
-      game=action.match;
-      team="All";
-      render(action.open);
-    } else if (action.team) {
-      team=action.team;
-      render();
-    } else if (action.stat) {
-      stat=action.stat;
-      render(open);
-    } else if (action.window) {
-      n=Number(action.window);
-      render(open);
-    } else if ("minutes" in action) {
-      minutes=!minutes;
-      render(open);
-    } else if (action.venue) {
-      venue=action.venue;
-      render(open);
-    } else if (action.pick) {
-      const [id,side] = action.pick.split(":");
-      const player = data.players.find(p => p.id===Number(id));
-      if (!player) return;
-
-      const existing = picks.findIndex(p =>
-        p.id===Number(id) && p.stat===stat && p.side===side
-      );
-
-      if (existing<0) {
-        picks.push({
-          id:player.id,
-          name:player.name,
-          team:player.team,
-          position:player.position,
-          height:player.height,
-          weight:player.weight,
-          stat,
-          side,
-          average:avg(player,stat),
-          saved_at:new Date().toISOString()
-        });
-      } else {
-        picks.splice(existing,1);
-      }
-
-      save();
-      render(open);
-    } else if (action.remove!==undefined) {
-      picks.splice(Number(action.remove),1);
-      save();
-      render();
-    }
-  });
-
-  q("main").addEventListener("error",event => {
-    const image = event.target;
-
-    if (
-      image instanceof HTMLImageElement &&
-      image.classList.contains("opponent-logo")
-    ) {
-      image.hidden = true;
-
-      if (image.nextElementSibling) {
-        image.nextElementSibling.hidden = false;
-      }
-    }
-  },true);
-
-  q("#search").addEventListener("input",event => {
-    search=event.target.value;
-    render();
-  });
-
-  async function load() {
-    try {
-      const response = await fetch(
-        "/api/dashboard",
-        {cache:"no-store"}
-      );
-
-      const result = await response.json();
-
-      if (!response.ok) throw Error(result.error);
-
-      data=result;
-
-      q("#status").textContent =
-        `${result.date} · ${result.season} · Saved game statistics`+
-        (result.updated_at
-          ?" · Data updated "+new Date(result.updated_at).toLocaleString()
-          :"");
-
-      render();
-    } catch (error) {
-      q("#status").textContent = navigator.onLine
-        ?"Saved NBA data could not load. Reload to try again."
-        :"Offline · Reconnect to load current NBA stats.";
-
-      render();
-    }
-  }
-
-  render();
-  load();
-
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register(
-      "/service-worker.js"
-    ).catch(() => {});
-  }
+const q=selector=>document.querySelector(selector);
+const cats=["PTS","REB","AST","3PM","PR","PA","RA","PRA","STL","BLK"];
+let data={players:[],games:[],team_stats:{}};
+let game="all",team="All",stat="PTS",n=5,venue="All";
+let minutes=false,search="",myPicks=false;
+let picks=[],favorites=[],favoriteTeams=[];
+const storageKey="nba-prop-tracker-picks-v1";
+const favoritesKey="zenstats-favorite-players-v1";
+const favoriteTeamsKey="zenstats-favorite-teams-v1";
+const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({
+"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+}[c]));
+
+function storageMessage(){
+q("#save-status").hidden=false;
+q("#save-status").textContent=
+"Picks could not be saved on this device. They will last for this session only.";
+}
+
+function loadFavoriteIds(key){
+try{
+const stored=JSON.parse(localStorage.getItem(key)||"[]");
+return Array.isArray(stored)
+?[...new Set(stored.filter(Number.isInteger))]:[];
+}catch(error){return [];}
+}
+favorites=loadFavoriteIds(favoritesKey);
+favoriteTeams=loadFavoriteIds(favoriteTeamsKey);
+
+try{
+const saved=JSON.parse(localStorage.getItem(storageKey)||"[]");
+if(Array.isArray(saved)){
+picks=saved.filter(p=>
+Number.isInteger(p.id)&&typeof p.name==="string"&&
+cats.includes(p.stat)&&["Over","Under"].includes(p.side)&&
+Number.isFinite(p.average));
+}
+}catch(error){storageMessage();}
+
+function save(){
+try{localStorage.setItem(storageKey,JSON.stringify(picks));}
+catch(error){storageMessage();}
+}
+
+function saveFavoriteIds(key,ids,label){
+try{localStorage.setItem(key,JSON.stringify(ids));}
+catch(error){
+q("#save-status").hidden=false;
+q("#save-status").textContent=
+label+" could not be saved on this device; they will last for this session only.";
+}
+}
+
+function val(log,key){
+const combinations={
+PR:["PTS","REB"],PA:["PTS","AST"],RA:["REB","AST"],
+PRA:["PTS","REB","AST"]
+};
+const fields=combinations[key]||[key];
+return fields.every(f=>typeof log[f]==="number"&&Number.isFinite(log[f]))
+?fields.reduce((sum,f)=>sum+log[f],0):null;
+}
+
+function avg(player,key){
+const values=player.logs.map(log=>val(log,key)).filter(v=>v!==null);
+return values.length?values.reduce((a,b)=>a+b,0)/values.length:null;
+}
+const fmt=v=>v===null?"—":v.toFixed(1);
+
+function teamCode(value){
+const code=String(value||"").toUpperCase();
+return ({
+GS:"GSW",NY:"NYK",SA:"SAS",NO:"NOP",UTAH:"UTA",WSH:"WAS"
+})[code]||code;
+}
+
+function opponentLogo(value){
+const code=teamCode(value);
+const slug=({
+GSW:"gs",NYK:"ny",SAS:"sa",NOP:"no",UTA:"utah",WAS:"wsh"
+})[code]||code.toLowerCase();
+return "https://a.espncdn.com/i/teamlogos/nba/500/"+
+encodeURIComponent(slug)+".png";
+}
+
+function opponentFor(player){
+const matchup=data.games.find(g=>String(g.id)===game);
+if(!matchup)return null;
+if(player.team_id===matchup.home_id)return matchup.away;
+if(player.team_id===matchup.away_id)return matchup.home;
+return null;
+}
+
+function chosen(player,key){
+const opponent=opponentFor(player);
+const pool=venue==="Head-to-Head"
+?[...player.logs,...(player.h2h_logs||[])]:player.logs;
+const unique=[...new Map(pool.map(log=>[String(log.id),log])).values()];
+return unique.filter(log=>{
+if(val(log,key)===null)return false;
+if(venue==="Head-to-Head"){
+return opponent!==null&&teamCode(log.opp)===teamCode(opponent);
+}
+return venue==="All"||log.home===(venue==="Home");
+}).sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,n);
+}
+
+const matches=player=>
+player.name.toLowerCase().includes(search.trim().toLowerCase());
+const selected=(id,side)=>picks.some(p=>
+p.id===id&&p.stat===stat&&p.side===side);
+
+function favoriteButton(player){
+const active=favorites.includes(player.id);
+return `<button type="button" class="favorite-star"
+data-favorite="${player.id}" aria-pressed="${active}"
+aria-label="${active?"Remove ":"Add "}${esc(player.name)} ${active?"from":"to"} favorites"
+>${active?"★":"☆"}</button>`;
+}
+
+function favoriteTeamButton(id,name){
+const active=favoriteTeams.includes(id);
+return `<button type="button" class="favorite-star"
+data-favorite-team="${id}" aria-pressed="${active}"
+aria-label="${active?"Remove ":"Add "}${esc(name)} ${active?"from":"to"} favorite teams"
+>${active?"★":"☆"}</button>`;
+}
+
+function scheduledFavoriteTeams(){
+const teams=new Map();
+for(const matchup of data.games){
+for(const [id,abbreviation] of [
+[matchup.away_id,matchup.away],[matchup.home_id,matchup.home]
+]){
+if(!favoriteTeams.includes(id))continue;
+if(!teams.has(id))teams.set(id,{id,abbreviation,matchups:[]});
+teams.get(id).matchups.push(matchup);
+}
+}
+return [...teams.values()];
+}
+
+function availabilityFor(player,gameId=game){
+return player.availability?.[String(gameId)]||{};
+}
+
+function eligible(player,gameId=game){
+const status=String(
+availabilityFor(player,gameId).injury_status||""
+).trim().toLowerCase();
+return !["out","doubtful"].includes(status);
+}
+
+function starterRank(player,gameId=game){
+const info=availabilityFor(player,gameId);
+if(info.is_starter!==true)return 2;
+if(info.starter_source==="confirmed")return 0;
+if(info.starter_source==="projected")return 1;
+return 2;
+}
+
+function playerOrder(a,b,gameId=game){
+return starterRank(a,gameId)-starterRank(b,gameId)||
+a.name.localeCompare(b.name);
+}
+
+function lineupLabel(player,gameId=game){
+const rank=starterRank(player,gameId);
+return rank<2
+?`<span class="muted green" style="display:block;margin-bottom:5px">${
+rank===0?"Starter":"Projected starter"
+}</span>`:"";
+}
+
+function identity(player){
+player={...player,...(data.players.find(p=>p.id===player.id)||{})};
+const bio=[player.position,player.height,player.weight]
+.filter(Boolean).join(" · ");
+const url=player.id<0
+?`https://a.espncdn.com/i/headshots/nba/players/full/${Math.abs(player.id)}.png`
+:`https://cdn.nba.com/headshots/nba/latest/260x190/${player.id}.png`;
+return `<span class="identity">
+<img src="${url}" alt="${esc(player.name)}" loading="lazy">
+<span><span class="muted">${esc(player.team)}</span><br>
+<strong>${esc(player.name)}</strong>
+${bio?`<br><span class="muted">${esc(bio)}</span>`:""}
+</span></span>`;
+}
+
+function renderFavorites(){
+const scheduled=data.players.filter(player=>favorites.includes(player.id))
+.map(player=>({
+player,matchups:data.games.filter(g=>
+[g.home_id,g.away_id].includes(player.team_id)&&eligible(player,g.id))
+})).filter(item=>item.matchups.length);
+const teams=scheduledFavoriteTeams();
+q("#favorites").innerHTML=`
+<section class="favorite-panel">
+<h2>Favorites <span class="muted">Today</span></h2>
+<h3>Players (${scheduled.length})</h3>
+${scheduled.map(({player,matchups})=>`
+<div class="favorite-row">
+<button class="favorite-open"
+data-favorite-open="${player.id}" data-match="${esc(matchups[0].id)}">
+${identity(player)}
+${lineupLabel(player,matchups[0].id)}
+<span class="muted">${matchups.map(g=>
+esc(g.away)+" @ "+esc(g.home)).join(" · ")}</span>
+</button>${favoriteButton(player)}
+</div>`).join("")}
+${!scheduled.length?`<p class="muted">${
+favorites.length
+?"None of your favorite players have a game on today's saved schedule."
+:"Tap ☆ beside a player to save them here."
+}</p>`:""}
+<h3>Teams (${teams.length})</h3>
+${teams.map(item=>`
+<div class="favorite-row">
+<button class="favorite-open" data-favorite-team-open="${item.id}"
+data-match="${esc(item.matchups[0].id)}">
+<span class="identity">
+<img class="favorite-team-logo"
+src="${opponentLogo(item.abbreviation)}"
+alt="${esc(item.abbreviation)}" loading="lazy">
+<strong>${esc(item.abbreviation)}</strong></span>
+<span class="muted">${item.matchups.map(g=>
+esc(g.away)+" @ "+esc(g.home)).join(" · ")}</span>
+</button>${favoriteTeamButton(item.id,item.abbreviation)}
+</div>`).join("")}
+${!teams.length?`<p class="muted">${
+favoriteTeams.length
+?"None of your favorite teams have a game on today's saved schedule."
+:"Tap ☆ beside a team name to save it here."
+}</p>`:""}
+<p class="muted">${favorites.length} players · ${favoriteTeams.length}
+teams saved. Listed when their team is scheduled.</p>
+</section>`;
+}
+
+function trend(player){
+const a=avg(player,stat);
+const games=player.logs.filter(g=>val(g,stat)!==null).slice(0,n);
+if(a===null)return '<span class="muted">No saved history</span>';
+const above=games.filter(g=>val(g,stat)>a+1e-9).length;
+const below=games.filter(g=>val(g,stat)<a-1e-9).length;
+if(above===below){
+return `<span class="muted">Above / Below tied · ${above}/${games.length} each</span>`;
+}
+return `<span class="${above>below?"green":"red"}">
+${above>below?"Above":"Below"} ${Math.max(above,below)}/${games.length}
+</span>`;
+}
+
+function matchupLabel(log){
+return log.away_team&&log.home_team
+?log.away_team+" @ "+log.home_team
+:(log.home?"Home vs ":"Away at ")+log.opp;
+}
+
+function showBox(player,log){
+const number=v=>Number.isFinite(v)?String(v):"—";
+const pair=(made,attempted)=>number(made)+" / "+number(attempted);
+const rows=[
+["Minutes",Number.isFinite(log.MIN)?log.MIN.toFixed(1):"—"],
+["Points",number(log.PTS)],["Rebounds",number(log.REB)],
+["Assists",number(log.AST)],
+["3PT made / attempted",pair(log["3PM"],log["3PA"])],
+["Steals",number(log.STL)],["Blocks",number(log.BLK)],
+["Turnovers",number(log.TOV)],
+["FG made / attempted",pair(log.FGM,log.FGA)],
+["FT made / attempted",pair(log.FTM,log.FTA)],
+["Personal fouls",number(log.PF)],
+["Offensive rebounds",number(log.OREB)],
+["Defensive rebounds",number(log.DREB)]
+];
+q("#box-title").textContent=player.name+" · Box Score";
+q("#box-content").innerHTML=identity(player)+`
+<p class="muted">${esc(log.date)} · ${esc(matchupLabel(log))}</p>
+<table class="box-table">
+<thead><tr><th scope="col">Stat</th>
+<th scope="col" style="text-align:right">Total</th></tr></thead>
+<tbody>${rows.map(([label,value])=>
+`<tr><th scope="row">${label}</th><td>${value}</td></tr>`
+).join("")}</tbody>
+</table><p class="muted">— means unavailable in the saved data.</p>`;
+q("#box-dialog").showModal();
+}
+
+function gameDate(value){
+const match=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(value||""));
+return match?`${Number(match[2])}/${Number(match[3])}`:"";
+}
+
+function chart(player){
+const key=minutes?"MIN":stat;
+const a=avg(player,key);
+const games=chosen(player,key).slice().reverse();
+if(!games.length){
+return `<p class="muted">${
+venue==="Head-to-Head"
+?"No saved head-to-head games against "+esc(opponentFor(player)||"this opponent")+"."
+:"No saved games for this selection."
+}</p>`;
+}
+const max=Math.max(1,a,...games.map(g=>
+key==="3PM"?Math.max(g["3PA"]??0,g[key]):val(g,key)))*1.2;
+const bars=games.map(log=>{
+const v=val(log,key);
+const attempts=key==="3PM"&&Number.isFinite(log["3PA"])
+?`<div style="position:absolute;bottom:0;width:100%;
+height:${100*log["3PA"]/max}%;background:#596982;">
+<span class="number" style="color:#bbc8dd">${log["3PA"]}</span>
+</div>`:"";
+const color=v>a+1e-9?"#97ff42":v<a-1e-9?"#ff667e":"#efd16a";
+return `<div class="column">
+<button class="box-hit" data-box="${player.id}:${esc(log.id)}"
+aria-label="${esc(player.name)} game box score, ${esc(log.date)}, ${esc(log.opp)}, ${v} ${esc(key)}"></button>
+${attempts}
+<div class="bar" style="height:${100*v/max}%;
+${key==="3PM"?"width:62%;margin:auto auto 0;":""}
+background:${color};"><span class="number">${v}</span></div>
+<span class="opponent">
+<img class="opponent-logo" src="${opponentLogo(log.opp)}"
+alt="${esc(teamCode(log.opp))}" loading="lazy">
+<span class="logo-fallback" hidden>${esc(teamCode(log.opp))}</span>
+<span class="game-date">${gameDate(log.date)}</span>
+</span></div>`;
+}).join("");
+return `<div class="plot" role="group"
+aria-label="Recent ${esc(key)}. Select a bar for its game box score.">
+<div class="bars">${bars}</div>
+<div class="average" style="bottom:calc(58px + 155px * ${a/max});">
+<span>AVG ${fmt(a)}</span></div></div>
+<p class="muted">
+${key==="3PM"?"Muted background: attempted · Colored bar: made<br>":""}
+Green: above · Red: below · Yellow: equal · White: season average
+</p>
+${key==="3PM"&&games.some(g=>g["3PA"]===null)
+?'<p class="muted">Attempts unavailable for some games; no attempts bar is shown for those games.</p>':""}`;
+}
+
+function headToHeadTable(player,games,key){
+if(venue!=="Head-to-Head"||!games.length)return "";
+return `<div style="overflow-x:auto"><table class="box-table">
+<thead><tr><th scope="col">Date</th><th scope="col">Game</th>
+<th scope="col">${esc(key)}</th><th scope="col">Box score</th>
+</tr></thead><tbody>
+${games.map(log=>`<tr>
+<th scope="row">${esc(log.date)}</th>
+<td>${esc(matchupLabel(log))}</td><td>${val(log,key)}</td>
+<td><button data-box="${player.id}:${esc(log.id)}">View</button></td>
+</tr>`).join("")}
+</tbody></table></div>`;
+}
+
+function detail(player){
+const key=minutes?"MIN":stat;
+const games=chosen(player,key);
+const a=avg(player,stat);
+const recent=games.length
+?fmt(games.reduce((s,g)=>s+val(g,key),0)/games.length):"—";
+return `<details data-player="${player.id}">
+<summary>
+<span class="player-heading">${identity(player)}${favoriteButton(player)}</span>
+${lineupLabel(player)}
+<span class="muted">
+PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} ·
+AST ${fmt(avg(player,"AST"))}
+</span></summary>
+<div class="row" style="margin-top:12px">
+${cats.map(k=>`<button data-stat="${k}"
+aria-pressed="${stat===k}">${k}</button>`).join("")}
+</div>
+<div style="text-align:right;margin:9px 0">
+<button data-minutes>${minutes?"Stat Graph":"Minutes Graph"}</button>
+</div>
+<div class="row" style="justify-content:flex-end;margin:9px 0">
+${["All","Home","Away","Head-to-Head"].map(v=>
+`<button data-venue="${v}" aria-pressed="${venue===v}"
+${v==="Head-to-Head"&&!opponentFor(player)?"disabled":""}>${v}</button>`
+).join("")}
+</div>
+${venue==="Head-to-Head"?`<p class="muted">
+Against ${esc(opponentFor(player)||"the selected opponent")} ·
+${esc(data.h2h_seasons||"current and previous season")}.
+Most recent saved meetings; season average stays current-season only.
+</p>`:""}
+<h3>Performance</h3>
+<div class="row"><span class="muted">Last</span>
+${[5,10,20].map(v=>`<button data-window="${v}"
+aria-pressed="${n===v}">${v}</button>`).join("")}
+</div>
+<div class="metrics">
+<div class="metric"><span class="muted">Season average</span>
+<strong>${fmt(avg(player,key))}</strong></div>
+<div class="metric"><span class="muted">Last ${n} average</span>
+<strong>${recent}</strong></div>
+<div class="metric"><span class="muted">Games</span>
+<strong>${games.length}</strong></div>
+</div>
+${chart(player)}${headToHeadTable(player,games,key)}
+<h3>Add to My Picks</h3>
+<div class="actions">
+${["Over","Under"].map(side=>
+`<button data-pick="${player.id}:${side}"
+aria-pressed="${selected(player.id,side)}" ${a===null?"disabled":""}>
+${selected(player.id,side)?"✓ ":""}${side}</button>`).join("")}
+</div></details>`;
+}
+
+function teamCards(matchup,onlyId){
+const number=value=>Number.isFinite(value)?value.toFixed(1):"—";
+const percent=value=>Number.isFinite(value)?value.toFixed(1)+"%":"—";
+const shown=[
+[matchup.away_id,matchup.away,"Away"],
+[matchup.home_id,matchup.home,"Home"]
+].filter(([id,abbreviation])=>
+(onlyId===undefined||id===onlyId)&&
+(team==="All"||teamCode(team)===teamCode(abbreviation)));
+return `<section class="team-cards"
+style="${shown.length===1?"grid-template-columns:minmax(0,1fr)":""}"
+aria-label="Current-season team statistics">
+${shown.map(([id,abbreviation,location])=>{
+const t=data.team_stats?.[String(id)];
+const rows=[
+["Record",t?`${t.wins}–${t.losses}`:"—"],
+["Points / game",number(t?.points)],
+["Points allowed",number(t?.points_allowed)],
+["Rebounds / game",number(t?.rebounds)],
+["Rebounds allowed",number(t?.rebounds_allowed)],
+["Assists / game",number(t?.assists)],
+["FG%",percent(t?.fg_pct)],
+["3PT%",percent(t?.three_pct)],
+["FT%",percent(t?.ft_pct)],
+["Turnovers / game",number(t?.turnovers)]
+];
+return `<article class="team-card">
+<h3 class="team-heading"><span>${esc(abbreviation)}
+<span class="muted">· ${location}</span></span>
+${favoriteTeamButton(id,t?.name||abbreviation)}</h3>
+<div class="muted">${esc(t?.name||abbreviation)}</div>
+${rows.map(([label,value])=>
+`<div class="team-stat-row"><span>${label}</span>
+<strong>${value}</strong></div>`).join("")}
+<p class="muted">${
+t?`${esc(data.season)} · ${t.games} saved final games`
+:"Team statistics not available yet."
+}</p>
+${t&&(t.box_games<t.games||t.opponent_box_games<t.games)
+?`<p class="muted">Box-score coverage:
+${t.box_games}/${t.games} team ·
+${t.opponent_box_games}/${t.games} opponent.
+Missing totals are excluded.</p>`:""}
+</article>`;
+}).join("")}</section>`;
+}
+
+function render(open){
+q("#nav").innerHTML=`
+<button data-game="all"
+aria-pressed="${game==="all"&&!myPicks}">All Games</button>
+`+data.games.map(g=>`<button data-game="${esc(g.id)}"
+aria-pressed="${game===String(g.id)&&!myPicks}">
+${esc(g.away)} @ ${esc(g.home)}</button>`).join("");
+q("#picks").textContent=
+`${myPicks?"← Back · ":""}My Picks (${picks.length})`;
+q("#search").hidden=myPicks;
+let html="";
+if(myPicks){
+html="<h2>My Picks</h2>"+(picks.length
+?picks.map((p,i)=>`<div class="group">
+${identity(p)}
+<p>${p.side} season ${p.stat} average · ${fmt(p.average)}</p>
+<button data-remove="${i}">Remove</button>
+</div>`).join(""):'<p class="muted">No picks saved.</p>');
+}else if(game==="all"){
+html=`<div class="row" style="justify-content:space-between">
+<h2>Above & Below Season Average</h2>
+<span class="muted">Last ${n} · ${stat}</span></div>`;
+for(const g of data.games){
+const shown=[g.away_id,g.home_id].flatMap(id=>
+data.players.filter(p=>
+p.team_id===id&&matches(p)&&avg(p,stat)!==null&&eligible(p,g.id)
+).sort((a,b)=>playerOrder(a,b,g.id)).slice(0,2));
+if(shown.length){
+html+=`<section class="group">
+<h3>${esc(g.away)} @ ${esc(g.home)}</h3>
+<div class="grid">${shown.map(p=>`<div class="tile">
+<div class="tile-star-row">${favoriteButton(p)}</div>
+<button class="tile-open" data-open="${p.id}" data-match="${esc(g.id)}">
+${identity(p)}${lineupLabel(p,g.id)}
+<p class="muted">Season ${stat} avg · ${fmt(avg(p,stat))}</p>
+<strong>${trend(p)}</strong>
+</button></div>`).join("")}</div></section>`;
+}
+}
+if(search.trim()){
+const scheduled=new Set(data.games.flatMap(g=>[g.home_id,g.away_id]));
+const others=data.players.filter(p=>
+matches(p)&&avg(p,stat)!==null&&!scheduled.has(p.team_id));
+if(others.length)html+="<h2>Other Players</h2>"+others.map(detail).join("");
+}
+if(!data.games.length&&!search.trim()){
+html+=`<p class="muted">No games are saved for today.
+Search a player to view their saved history.</p>`;
+}
+}else{
+const g=data.games.find(g=>String(g.id)===game);
+if(g){
+html=`<h2>${esc(g.away)} @ ${esc(g.home)}</h2>
+<div class="row">
+${["All",g.away,g.home].map(t=>
+`<button data-team="${esc(t)}" aria-pressed="${t===team}">${esc(t)}</button>`
+).join("")}</div>
+${team==="All"
+?`<div class="matchup-columns">
+${[[g.away_id,g.away],[g.home_id,g.home]].map(([id,abbreviation])=>
+`<section class="team-column"
+aria-label="${esc(abbreviation)} team stats and players">
+${teamCards(g,id)}
+${data.players.filter(p=>
+p.team_id===id&&matches(p)&&eligible(p,g.id)
+).sort((a,b)=>playerOrder(a,b,g.id)).map(detail).join("")}
+</section>`).join("")}</div>`
+:teamCards(g)+data.players.filter(p=>
+[g.home_id,g.away_id].includes(p.team_id)&&
+teamCode(p.team)===teamCode(team)&&matches(p)&&eligible(p,g.id)
+).sort((a,b)=>playerOrder(a,b,g.id)).map(detail).join("")}`;
+}
+}
+q("#content").innerHTML=html;
+renderFavorites();
+if(open!==undefined){
+const section=q(`[data-player="${open}"]`);
+if(section)section.open=true;
+}
+}
+
+q("main").addEventListener("click",event=>{
+const button=event.target.closest("button");
+if(!button)return;
+const action=button.dataset;
+const open=button.closest("[data-player]")?.dataset.player;
+
+if(action.favoriteTeam!==undefined){
+event.preventDefault();
+const id=Number(action.favoriteTeam);
+const index=favoriteTeams.indexOf(id);
+if(index<0)favoriteTeams.push(id);
+else favoriteTeams.splice(index,1);
+saveFavoriteIds(favoriteTeamsKey,favoriteTeams,"Favorite teams");
+render(open);
+return;
+}
+
+if(action.favoriteTeamOpen!==undefined){
+const matchup=data.games.find(g=>String(g.id)===action.match);
+const id=Number(action.favoriteTeamOpen);
+if(!matchup||![matchup.home_id,matchup.away_id].includes(id))return;
+game=String(matchup.id);
+team=id===matchup.home_id?matchup.home:matchup.away;
+venue="All";
+search="";
+q("#search").value="";
+myPicks=false;
+render();
+q("#content").scrollIntoView({block:"start"});
+return;
+}
+
+if(action.favorite!==undefined){
+event.preventDefault();
+const id=Number(action.favorite);
+const index=favorites.indexOf(id);
+if(index<0)favorites.push(id);
+else favorites.splice(index,1);
+saveFavoriteIds(favoritesKey,favorites,"Favorite players");
+render(open);
+return;
+}
+
+if(action.favoriteOpen!==undefined){
+game=action.match;
+team="All";
+venue="All";
+search="";
+q("#search").value="";
+myPicks=false;
+render(action.favoriteOpen);
+q(`[data-player="${action.favoriteOpen}"]`)?.scrollIntoView({block:"start"});
+return;
+}
+
+if(action.box){
+const [id,gameId]=action.box.split(":");
+const player=data.players.find(p=>p.id===Number(id));
+const log=player&&[
+...player.logs,...(player.h2h_logs||[])
+].find(log=>String(log.id)===gameId);
+if(log)showBox(player,log);
+return;
+}
+
+if("closeBox" in action){
+q("#box-dialog").close();
+return;
+}
+
+if(button.id==="picks"){
+myPicks=!myPicks;
+render();
+}else if(action.game){
+game=action.game;
+team="All";
+venue="All";
+myPicks=false;
+render();
+}else if(action.open){
+game=action.match;
+team="All";
+render(action.open);
+}else if(action.team){
+team=action.team;
+render();
+}else if(action.stat){
+stat=action.stat;
+render(open);
+}else if(action.window){
+n=Number(action.window);
+render(open);
+}else if("minutes" in action){
+minutes=!minutes;
+render(open);
+}else if(action.venue){
+venue=action.venue;
+render(open);
+}else if(action.pick){
+const [id,side]=action.pick.split(":");
+const player=data.players.find(p=>p.id===Number(id));
+if(!player)return;
+const existing=picks.findIndex(p=>
+p.id===Number(id)&&p.stat===stat&&p.side===side);
+if(existing<0){
+picks.push({
+id:player.id,name:player.name,team:player.team,
+position:player.position,height:player.height,weight:player.weight,
+stat,side,average:avg(player,stat),
+saved_at:new Date().toISOString()
+});
+}else{picks.splice(existing,1);}
+save();
+render(open);
+}else if(action.remove!==undefined){
+picks.splice(Number(action.remove),1);
+save();
+render();
+}
+});
+
+q("main").addEventListener("error",event=>{
+const image=event.target;
+if(image instanceof HTMLImageElement&&
+image.classList.contains("opponent-logo")){
+image.hidden=true;
+if(image.nextElementSibling)image.nextElementSibling.hidden=false;
+}
+},true);
+
+q("#search").addEventListener("input",event=>{
+search=event.target.value;
+render();
+});
+
+async function load(){
+try{
+const response=await fetch("/api/dashboard",{cache:"no-store"});
+const result=await response.json();
+if(!response.ok)throw Error(result.error);
+data=result;
+q("#status").textContent=
+`${result.date} · ${result.season} · Saved game statistics`+
+(result.updated_at
+?" · Data updated "+new Date(result.updated_at).toLocaleString():"");
+render();
+}catch(error){
+q("#status").textContent=navigator.onLine
+?"Saved NBA data could not load. Reload to try again."
+:"Offline · Reconnect to load current NBA stats.";
+render();
+}
+}
+
+render();
+load();
+if("serviceWorker" in navigator){
+navigator.serviceWorker.register("/service-worker.js").catch(()=>{});
+}
 })();
 </script>
 </body>
