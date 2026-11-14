@@ -56,9 +56,6 @@ img{width:36px;height:36px;object-fit:cover;border-radius:50%;background:#35435a
 .tile-star-row{display:flex;justify-content:flex-end;margin-bottom:4px}
 .green{color:#97ff42}
 .red{color:#ff738b}
-details{background:#1d283b;border:1px solid #3c4b63;border-radius:10px;padding:12px;margin:9px 0}
-summary{list-style:none;cursor:pointer}
-summary::after{content:"⌄";float:right}
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:15px 0}
 .metric{background:#2b374c;border-radius:7px;padding:11px;text-align:center}
 .metric strong{display:block;margin-top:5px}
@@ -86,6 +83,15 @@ summary::after{content:"⌄";float:right}
 .box-table{width:100%;border-collapse:collapse;margin-top:12px}
 .box-table th,.box-table td{text-align:left;padding:8px;border-bottom:1px solid #ffffff20}
 .box-table td{text-align:right;font-variant-numeric:tabular-nums}
+#player-dialog{background:#1d283b;color:#f4f5fb;border:1px solid #3c4b63;border-radius:12px;width:min(960px,calc(100vw - 24px));max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:20px;overscroll-behavior:contain}
+#player-dialog::backdrop{background:#000c}
+.player-dialog-header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.player-dialog-header h2{margin:0}
+.player-card{background:#1d283b;border:1px solid #3c4b63;border-radius:10px;padding:12px;margin:9px 0;display:flex;align-items:flex-start;gap:8px}
+.player-open{flex:1;min-width:0;text-align:left;padding:0;background:transparent;border:0;border-radius:0}
+#player-dialog .plot{height:318px}
+#player-dialog .average{bottom:calc(58px + 235px * var(--average-ratio))!important}
+#player-dialog .metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(min-width:1100px){
 main{max-width:1080px}
 .app-columns{display:grid;grid-template-columns:minmax(0,740px) 260px;align-items:start}
@@ -96,9 +102,10 @@ main{padding-left:12px;padding-right:12px}
 .tile{padding:9px}
 .identity{flex-wrap:wrap}
 .bars{gap:3px}
+#player-dialog{padding:14px}
 }
 @media(pointer:coarse){
-button,summary{min-height:44px}
+button{min-height:44px}
 .box-hit{min-height:0}
 input{font-size:16px}
 }
@@ -119,6 +126,15 @@ input{font-size:16px}
 <div id="content"></div>
 <aside id="favorites" aria-label="Favorite players and teams scheduled today"></aside>
 </div>
+
+<dialog id="player-dialog" aria-labelledby="player-dialog-title">
+<div class="player-dialog-header">
+<h2 id="player-dialog-title">Player stats</h2>
+<button data-close-player autofocus>Close</button>
+</div>
+<div id="player-dialog-content"></div>
+</dialog>
+
 <dialog id="box-dialog" aria-labelledby="box-title">
 <div class="row" style="justify-content:space-between">
 <h2 id="box-title">Player box score</h2>
@@ -127,6 +143,7 @@ input{font-size:16px}
 <div id="box-content"></div>
 </dialog>
 </main>
+
 <script>
 (() => {
 const q=selector=>document.querySelector(selector);
@@ -134,6 +151,7 @@ const cats=["PTS","REB","AST","3PM","PR","PA","RA","PRA","STL","BLK"];
 let data={players:[],games:[],team_stats:{}};
 let game="all",team="All",stat="PTS",n=5,venue="All";
 let minutes=false,search="",myPicks=false;
+let activePlayer=null;
 let picks=[],favorites=[],favoriteTeams=[];
 const storageKey="nba-prop-tracker-picks-v1";
 const favoritesKey="zenstats-favorite-players-v1";
@@ -460,7 +478,8 @@ alt="${esc(teamCode(log.opp))}" loading="lazy">
 return `<div class="plot" role="group"
 aria-label="Recent ${esc(key)}. Select a bar for its game box score.">
 <div class="bars">${bars}</div>
-<div class="average" style="bottom:calc(58px + 155px * ${a/max});">
+<div class="average"
+style="--average-ratio:${a/max};bottom:calc(58px + 155px * ${a/max});">
 <span>AVG ${fmt(a)}</span></div></div>
 <p class="muted">
 ${key==="3PM"?"Muted background: attempted · Colored bar: made<br>":""}
@@ -490,14 +509,14 @@ const games=chosen(player,key);
 const a=avg(player,stat);
 const recent=games.length
 ?fmt(games.reduce((s,g)=>s+val(g,key),0)/games.length):"—";
-return `<details data-player="${player.id}">
-<summary>
+return `<section data-player="${player.id}">
+<div>
 <span class="player-heading">${identity(player)}${favoriteButton(player)}</span>
 ${lineupLabel(player)}
 <span class="muted">
 PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} ·
 AST ${fmt(avg(player,"AST"))}
-</span></summary>
+</span></div>
 <div class="row" style="margin-top:12px">
 ${cats.map(k=>`<button data-stat="${k}"
 aria-pressed="${stat===k}">${k}</button>`).join("")}
@@ -536,7 +555,38 @@ ${["Over","Under"].map(side=>
 `<button data-pick="${player.id}:${side}"
 aria-pressed="${selected(player.id,side)}" ${a===null?"disabled":""}>
 ${selected(player.id,side)?"✓ ":""}${side}</button>`).join("")}
-</div></details>`;
+</div></section>`;
+}
+
+function playerCard(player){
+return `<div class="player-card">
+<button class="player-open" data-player-open="${player.id}"
+aria-haspopup="dialog" aria-label="Open ${esc(player.name)} stats">
+${identity(player)}${lineupLabel(player)}
+<span class="muted">
+PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} ·
+AST ${fmt(avg(player,"AST"))}
+</span></button>${favoriteButton(player)}</div>`;
+}
+
+function renderPlayerPopup(){
+if(activePlayer===null)return;
+const player=data.players.find(p=>p.id===activePlayer);
+if(!player)return;
+const panel=q("#player-dialog-content");
+const scrollTop=q("#player-dialog").scrollTop;
+const focused=document.activeElement;
+const focusKey=focused&&panel.contains(focused)
+?Array.from(focused.attributes).find(a=>a.name.startsWith("data-")):null;
+q("#player-dialog-title").textContent=player.name+" · Stats";
+panel.innerHTML=detail(player);
+if(!q("#player-dialog").open)q("#player-dialog").showModal();
+if(focusKey){
+const target=Array.from(panel.querySelectorAll("button")).find(b=>
+b.getAttribute(focusKey.name)===focusKey.value);
+if(target)target.focus({preventScroll:true});
+}
+q("#player-dialog").scrollTop=scrollTop;
 }
 
 function teamCards(matchup,onlyId){
@@ -645,20 +695,18 @@ aria-label="${esc(abbreviation)} team stats and players">
 ${teamCards(g,id)}
 ${data.players.filter(p=>
 p.team_id===id&&matches(p)&&eligible(p,g.id)
-).sort((a,b)=>playerOrder(a,b,g.id)).map(detail).join("")}
+).sort((a,b)=>playerOrder(a,b,g.id)).map(playerCard).join("")}
 </section>`).join("")}</div>`
 :teamCards(g)+data.players.filter(p=>
 [g.home_id,g.away_id].includes(p.team_id)&&
 teamCode(p.team)===teamCode(team)&&matches(p)&&eligible(p,g.id)
-).sort((a,b)=>playerOrder(a,b,g.id)).map(detail).join("")}`;
+).sort((a,b)=>playerOrder(a,b,g.id)).map(playerCard).join("")}`;
 }
 }
 q("#content").innerHTML=html;
 renderFavorites();
-if(open!==undefined){
-const section=q(`[data-player="${open}"]`);
-if(section)section.open=true;
-}
+if(open!==undefined)activePlayer=Number(open);
+renderPlayerPopup();
 }
 
 q("main").addEventListener("click",event=>{
@@ -666,6 +714,17 @@ const button=event.target.closest("button");
 if(!button)return;
 const action=button.dataset;
 const open=button.closest("[data-player]")?.dataset.player;
+
+if("closePlayer" in action){
+q("#player-dialog").close();
+return;
+}
+
+if(action.playerOpen!==undefined){
+activePlayer=Number(action.playerOpen);
+renderPlayerPopup();
+return;
+}
 
 if(action.favoriteTeam!==undefined){
 event.preventDefault();
@@ -712,7 +771,6 @@ search="";
 q("#search").value="";
 myPicks=false;
 render(action.favoriteOpen);
-q(`[data-player="${action.favoriteOpen}"]`)?.scrollIntoView({block:"start"});
 return;
 }
 
@@ -790,6 +848,11 @@ image.hidden=true;
 if(image.nextElementSibling)image.nextElementSibling.hidden=false;
 }
 },true);
+
+q("#player-dialog").addEventListener("close",()=>{
+activePlayer=null;
+q("#player-dialog-content").innerHTML="";
+});
 
 q("#search").addEventListener("input",event=>{
 search=event.target.value;
