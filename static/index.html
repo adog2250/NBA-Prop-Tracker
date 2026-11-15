@@ -109,6 +109,59 @@ button{min-height:44px}
 .box-hit{min-height:0}
 input{font-size:16px}
 }
+@media(max-width:600px){
+main{padding-left:10px;padding-right:10px;padding-top:max(10px,env(safe-area-inset-top));padding-bottom:max(10px,env(safe-area-inset-bottom))}
+header{margin-bottom:10px}
+h2{margin:10px 0 6px}
+h3{margin:8px 0}
+#status{margin:5px 0}
+#search{margin-top:8px}
+.app-columns{gap:8px}
+.group{padding:9px;margin:8px 0}
+.grid,.matchup-columns{gap:6px}
+.tile,.player-card{padding:8px}
+.player-card{margin:6px 0;gap:5px}
+.identity{gap:6px;margin-bottom:5px}
+.favorite-panel{padding:9px}
+.favorite-panel h3{margin:8px 0 4px}
+.favorite-panel p{margin:6px 0}
+.favorite-row{margin:5px 0}
+.favorite-open{padding:6px}
+.team-cards{margin:8px 0;gap:6px}
+.team-card{padding:8px}
+.team-stat-row{padding:5px 0;gap:5px}
+.team-card p{margin:6px 0}
+#player-dialog{width:calc(100vw - 12px);max-width:calc(100vw - 12px);max-height:calc(100dvh - 12px);padding:10px;border-radius:10px}
+.player-dialog-header{gap:8px;margin-bottom:6px}
+.player-dialog-header h2{font-size:13px}
+#player-dialog .identity{flex-wrap:nowrap;gap:7px;margin-bottom:4px}
+#player-dialog .identity img{width:32px;height:32px;flex-shrink:0}
+#player-dialog .player-heading{gap:6px}
+#player-dialog .player-stat-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin-top:8px!important}
+#player-dialog button{font-size:12px;padding:6px 9px;min-height:44px}
+#player-dialog .player-stat-tabs button{padding:4px}
+#player-dialog .player-graph-mode{margin:3px 0!important}
+#player-dialog .player-venue{gap:3px;margin:3px 0!important}
+#player-dialog .player-venue button{padding:6px 8px}
+#player-dialog h3{margin:6px 0}
+#player-dialog p.muted{margin:6px 0;line-height:1.35}
+#player-dialog .metrics{gap:4px;margin:8px 0}
+#player-dialog .metric{padding:7px 4px;min-width:0}
+#player-dialog .metric strong{margin-top:2px}
+#player-dialog .plot{height:200px;padding:20px 4px 44px;margin:10px 0 4px}
+#player-dialog .average{bottom:calc(44px + 136px * var(--average-ratio))!important}
+#player-dialog .opponent{padding-top:5px}
+#player-dialog .opponent-logo{width:min(18px,100%);height:18px;margin-bottom:2px}
+#player-dialog .game-date{font-size:9px}
+#player-dialog .actions{gap:6px}
+#player-dialog .box-hit{padding:0;min-height:0}
+#box-dialog{padding:10px;max-height:calc(100dvh - 20px)}
+#box-dialog .box-table th,#box-dialog .box-table td{padding:6px}
+}
+@media(max-width:360px){
+#player-dialog .player-venue button{padding-left:5px;padding-right:5px}
+#player-dialog .player-venue{gap:2px}
+}
 </style>
 </head>
 <body>
@@ -517,14 +570,14 @@ ${lineupLabel(player)}
 PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} ·
 AST ${fmt(avg(player,"AST"))}
 </span></div>
-<div class="row" style="margin-top:12px">
+<div class="row player-stat-tabs" style="margin-top:12px">
 ${cats.map(k=>`<button data-stat="${k}"
 aria-pressed="${stat===k}">${k}</button>`).join("")}
 </div>
-<div style="text-align:right;margin:9px 0">
+<div class="player-graph-mode" style="text-align:right;margin:9px 0">
 <button data-minutes>${minutes?"Stat Graph":"Minutes Graph"}</button>
 </div>
-<div class="row" style="justify-content:flex-end;margin:9px 0">
+<div class="row player-venue" style="justify-content:flex-end;margin:9px 0">
 ${["All","Home","Away","Head-to-Head"].map(v=>
 `<button data-venue="${v}" aria-pressed="${venue===v}"
 ${v==="Head-to-Head"&&!opponentFor(player)?"disabled":""}>${v}</button>`
