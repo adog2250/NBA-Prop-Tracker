@@ -52,8 +52,7 @@ img{width:36px;height:36px;object-fit:cover;border-radius:50%;background:#35435a
 .favorite-star[aria-pressed=true]{background:#242e40;color:#efd16a;border-color:#efd16a}
 .player-heading{display:flex;align-items:flex-start;gap:8px}
 .player-heading .identity{flex:1;min-width:0}
-.tile-open{display:block;width:100%;text-align:left;padding:0;background:transparent;border:0;border-radius:0}
-.tile-star-row{display:flex;justify-content:flex-end;margin-bottom:4px}
+.player-name-row{display:inline}
 .green{color:#97ff42}
 .red{color:#ff738b}
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:15px 0}
@@ -161,6 +160,16 @@ h3{margin:8px 0}
 @media(max-width:360px){
 #player-dialog .player-venue button{padding-left:5px;padding-right:5px}
 #player-dialog .player-venue{gap:2px}
+}
+.player-action-area{position:relative;isolation:isolate}
+.player-action-overlay{position:absolute;inset:0;width:100%;height:100%;padding:0;border:0;border-radius:inherit;background:transparent;z-index:1}
+.player-action-overlay:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.favorite-open.player-action-area{background:#242e40;border:1px solid #3d4a60}
+.player-favorite-star{position:relative;z-index:2;display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;margin-left:3px;min-width:28px;min-height:28px;padding:0;border:0;border-radius:0;background:transparent;color:#afbdd1;box-shadow:none;font-size:20px;line-height:1}
+.player-favorite-star[aria-pressed=true]{background:transparent;color:#efd16a;border:0;box-shadow:none}
+#player-dialog .player-favorite-star{padding:0;font-size:20px}
+@media(pointer:coarse){
+.player-favorite-star{min-width:44px;min-height:44px}
 }
 </style>
 </head>
@@ -314,7 +323,7 @@ p.id===id&&p.stat===stat&&p.side===side);
 
 function favoriteButton(player){
 const active=favorites.includes(player.id);
-return `<button type="button" class="favorite-star"
+return `<button type="button" class="favorite-star player-favorite-star"
 data-favorite="${player.id}" aria-pressed="${active}"
 aria-label="${active?"Remove ":"Add "}${esc(player.name)} ${active?"from":"to"} favorites"
 >${active?"★":"☆"}</button>`;
@@ -374,7 +383,7 @@ rank===0?"Starter":"Projected starter"
 }</span>`:"";
 }
 
-function identity(player){
+function identity(player,showFavorite=false){
 player={...player,...(data.players.find(p=>p.id===player.id)||{})};
 const bio=[player.position,player.height,player.weight]
 .filter(Boolean).join(" · ");
@@ -384,7 +393,7 @@ const url=player.id<0
 return `<span class="identity">
 <img src="${url}" alt="${esc(player.name)}" loading="lazy">
 <span><span class="muted">${esc(player.team)}</span><br>
-<strong>${esc(player.name)}</strong>
+<span class="player-name-row"><strong>${esc(player.name)}</strong>${showFavorite?favoriteButton(player):""}</span>
 ${bio?`<br><span class="muted">${esc(bio)}</span>`:""}
 </span></span>`;
 }
@@ -402,13 +411,15 @@ q("#favorites").innerHTML=`
 <h3>Players (${scheduled.length})</h3>
 ${scheduled.map(({player,matchups})=>`
 <div class="favorite-row">
-<button class="favorite-open"
-data-favorite-open="${player.id}" data-match="${esc(matchups[0].id)}">
-${identity(player)}
+<div class="favorite-open player-action-area">
+<button type="button" class="player-action-overlay"
+data-favorite-open="${player.id}" data-match="${esc(matchups[0].id)}"
+aria-haspopup="dialog" aria-label="Open ${esc(player.name)} stats"></button>
+${identity(player,true)}
 ${lineupLabel(player,matchups[0].id)}
 <span class="muted">${matchups.map(g=>
 esc(g.away)+" @ "+esc(g.home)).join(" · ")}</span>
-</button>${favoriteButton(player)}
+</div>
 </div>`).join("")}
 ${!scheduled.length?`<p class="muted">${
 favorites.length
@@ -564,7 +575,7 @@ const recent=games.length
 ?fmt(games.reduce((s,g)=>s+val(g,key),0)/games.length):"—";
 return `<section data-player="${player.id}">
 <div>
-<span class="player-heading">${identity(player)}${favoriteButton(player)}</span>
+<span class="player-heading">${identity(player,true)}</span>
 ${lineupLabel(player)}
 <span class="muted">
 PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} ·
@@ -612,14 +623,16 @@ ${selected(player.id,side)?"✓ ":""}${side}</button>`).join("")}
 }
 
 function playerCard(player){
-return `<div class="player-card">
-<button class="player-open" data-player-open="${player.id}"
-aria-haspopup="dialog" aria-label="Open ${esc(player.name)} stats">
-${identity(player)}${lineupLabel(player)}
+return `<div class="player-card player-action-area">
+<button type="button" class="player-action-overlay"
+data-player-open="${player.id}"
+aria-haspopup="dialog" aria-label="Open ${esc(player.name)} stats"></button>
+<div class="player-open">
+${identity(player,true)}${lineupLabel(player)}
 <span class="muted">
 PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} ·
 AST ${fmt(avg(player,"AST"))}
-</span></button>${favoriteButton(player)}</div>`;
+</span></div></div>`;
 }
 
 function renderPlayerPopup(){
@@ -720,13 +733,14 @@ eligible(p,g.id)&&starterRank(p,g.id)<2
 if(shown.length){
 html+=`<section class="group">
 <h3>${esc(g.away)} @ ${esc(g.home)}</h3>
-<div class="grid">${shown.map(p=>`<div class="tile">
-<div class="tile-star-row">${favoriteButton(p)}</div>
-<button class="tile-open" data-open="${p.id}" data-match="${esc(g.id)}">
-${identity(p)}${lineupLabel(p,g.id)}
+<div class="grid">${shown.map(p=>`<div class="tile player-action-area">
+<button type="button" class="player-action-overlay"
+data-open="${p.id}" data-match="${esc(g.id)}"
+aria-haspopup="dialog" aria-label="Open ${esc(p.name)} stats"></button>
+${identity(p,true)}${lineupLabel(p,g.id)}
 <p class="muted">Season ${stat} avg · ${fmt(avg(p,stat))}</p>
 <strong>${trend(p)}</strong>
-</button></div>`).join("")}</div></section>`;
+</div>`).join("")}</div></section>`;
 }
 }
 if(!data.games.length&&!search.trim()){
