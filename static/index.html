@@ -164,6 +164,22 @@ input{font-size:16px}
 button[data-stat],button[data-window],button[data-venue],button[data-team],button[data-minutes],button[data-close-player],button[data-pick],#nav button{position:relative}
 button[data-stat]::after,button[data-window]::after,button[data-venue]::after,button[data-team]::after,button[data-minutes]::after,button[data-close-player]::after,button[data-pick]::after,#nav button::after{content:"";position:absolute;inset:-2px}
 }
+.team-comparison-panel{margin:6px 0 8px;padding:6px;background:#1d283b;border:1px solid #3c4b63;border-radius:10px}
+.team-comparison{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px}
+.team-comparison .stat-label-col{width:30%}
+.team-comparison.one-team .stat-label-col{width:46%}
+.team-comparison th,.team-comparison td{padding:4px 3px;border-bottom:1px solid #ffffff12;overflow-wrap:break-word}
+.team-comparison td{text-align:center;font-variant-numeric:tabular-nums;white-space:nowrap}
+.team-comparison thead th{text-align:center}
+.team-comparison tbody th,.team-comparison .stat-label{text-align:left;color:#afbdd1;font-size:11px;font-weight:400}
+.team-comparison .comparison-record{font-size:11px;font-weight:400}
+.comparison-team-name{display:flex;justify-content:center;align-items:center;gap:4px}
+.team-comparison-panel .comparison-note{margin:4px 0;font-size:11px;line-height:1.3}
+@media(max-width:600px){
+.team-comparison th,.team-comparison td{padding:3px 2px}
+.team-comparison-panel{padding:5px}
+.comparison-team-name{gap:2px}
+}
 </style>
 </head>
 <body>
@@ -652,48 +668,92 @@ q("#player-dialog").scrollTop=scrollTop;
 function teamCards(matchup,onlyId){
 const number=value=>Number.isFinite(value)?value.toFixed(1):"—";
 const percent=value=>Number.isFinite(value)?value.toFixed(1)+"%":"—";
+
 const shown=[
 [matchup.away_id,matchup.away,"Away"],
 [matchup.home_id,matchup.home,"Home"]
 ].filter(([id,abbreviation])=>
 (onlyId===undefined||id===onlyId)&&
 (team==="All"||teamCode(team)===teamCode(abbreviation)));
-return `<section class="team-cards"
-style="${shown.length===1?"grid-template-columns:minmax(0,1fr)":""}"
-aria-label="Current-season team statistics">
+
+const rows=[
+["Points per game","points","points_allowed",false],
+["Assists per game","assists","assists_allowed",false],
+["Rebounds per game","rebounds","rebounds_allowed",false],
+["3-pointers per game","threes_made","threes_allowed",false],
+["FG%","fg_pct","fg_pct_allowed",true],
+["3PT%","three_pct","three_pct_allowed",true],
+["FT%","ft_pct","ft_pct_allowed",true],
+["Turnovers per game","turnovers","turnovers_forced",false]
+];
+
+const cell=(t,key,isPercent)=>{
+const value=(isPercent?percent:number)(t?.[key]);
+const count=t?.metric_games?.[key];
+const coverage=Number.isInteger(count)&&t
+?`${count}/${t.games} saved final games`
+:"Available saved final games";
+return `<td aria-label="${esc(coverage)}: ${esc(value)}">${value}</td>`;
+};
+
+return `<section class="team-comparison-panel"
+aria-label="Team statistics for and allowed">
+
+<table class="team-comparison ${shown.length===1?"one-team":""}">
+<colgroup><col class="stat-label-col"></colgroup>
+${shown.map(()=>"<colgroup><col><col></colgroup>").join("")}
+
+<thead>
+<tr>
+<th rowspan="3" scope="col" class="stat-label">Stat</th>
 ${shown.map(([id,abbreviation,location])=>{
 const t=data.team_stats?.[String(id)];
-const rows=[
-["Record",t?`${t.wins}–${t.losses}`:"—"],
-["Points / game",number(t?.points)],
-["Points allowed",number(t?.points_allowed)],
-["Rebounds / game",number(t?.rebounds)],
-["Rebounds allowed",number(t?.rebounds_allowed)],
-["Assists / game",number(t?.assists)],
-["FG%",percent(t?.fg_pct)],
-["3PT%",percent(t?.three_pct)],
-["FT%",percent(t?.ft_pct)],
-["Turnovers / game",number(t?.turnovers)]
-];
-return `<article class="team-card">
-<h3 class="team-heading"><span>${esc(abbreviation)}
-<span class="muted">· ${location}</span></span>
-${favoriteTeamButton(id,t?.name||abbreviation)}</h3>
-<div class="muted">${esc(t?.name||abbreviation)}</div>
-${rows.map(([label,value])=>
-`<div class="team-stat-row"><span>${label}</span>
-<strong>${value}</strong></div>`).join("")}
-<p class="muted">${
-t?`${esc(data.season)} · ${t.games} saved final games`
-:"Team statistics not available yet."
-}</p>
-${t&&(t.box_games<t.games||t.opponent_box_games<t.games)
-?`<p class="muted">Box-score coverage:
-${t.box_games}/${t.games} team ·
-${t.opponent_box_games}/${t.games} opponent.
-Missing totals are excluded.</p>`:""}
-</article>`;
-}).join("")}</section>`;
+return `<th colspan="2" scope="colgroup">
+<div class="comparison-team-name">
+<span>${esc(abbreviation)}</span>
+${favoriteTeamButton(id,t?.name||abbreviation)}
+</div>
+<span class="muted">${esc(t?.name||abbreviation)} · ${location}</span>
+</th>`;
+}).join("")}
+</tr>
+
+<tr>
+${shown.map(([id])=>{
+const t=data.team_stats?.[String(id)];
+return `<th colspan="2" class="comparison-record">
+Record ${t?`${t.wins}–${t.losses}`:"—"}
+</th>`;
+}).join("")}
+</tr>
+
+<tr>
+${shown.map(()=>
+'<th scope="col">For</th><th scope="col">Let up</th>'
+).join("")}
+</tr>
+</thead>
+
+<tbody>
+${rows.map(([label,own,allowed,isPercent])=>`
+<tr>
+<th scope="row">${label}</th>
+${shown.map(([id])=>{
+const t=data.team_stats?.[String(id)];
+return cell(t,own,isPercent)+cell(t,allowed,isPercent);
+}).join("")}
+</tr>`).join("")}
+</tbody>
+</table>
+
+<p class="muted comparison-note">
+${esc(data.season)} · Saved final games only.
+Missing totals are excluded; — means unavailable.
+</p>
+<p class="muted comparison-note">
+Turnovers: For = committed; Let up = opponent turnovers forced.
+</p>
+</section>`;
 }
 
 function render(open){
@@ -703,10 +763,13 @@ aria-pressed="${game==="all"&&!myPicks}">All Games</button>
 `+data.games.map(g=>`<button data-game="${esc(g.id)}"
 aria-pressed="${game===String(g.id)&&!myPicks}">
 ${esc(g.away)} @ ${esc(g.home)}</button>`).join("");
+
 q("#picks").textContent=
 `${myPicks?"← Back · ":""}My Picks (${picks.length})`;
+
 q("#search").hidden=myPicks;
 let html="";
+
 if(myPicks){
 html="<h2>My Picks</h2>"+(picks.length
 ?picks.map((p,i)=>`<div class="group">
@@ -714,16 +777,19 @@ ${identity(p)}
 <p>${p.side} season ${p.stat} average · ${fmt(p.average)}</p>
 <button data-remove="${i}">Remove</button>
 </div>`).join(""):'<p class="muted">No picks saved.</p>');
+
 }else if(game==="all"){
 html=`<div class="row" style="justify-content:space-between">
 <h2>Above & Below Season Average</h2>
 <span class="muted">Last ${n} · ${stat}</span></div>`;
+
 for(const g of data.games){
 const shown=[g.away_id,g.home_id].flatMap(id=>
 data.players.filter(p=>
 p.team_id===id&&matches(p)&&avg(p,stat)!==null&&
 eligible(p,g.id)&&starterRank(p,g.id)<2
 ).sort((a,b)=>playerOrder(a,b,g.id)).slice(0,2));
+
 if(shown.length){
 html+=`<section class="group">
 <h3>${esc(g.away)} @ ${esc(g.home)}</h3>
@@ -737,33 +803,41 @@ ${identity(p,true)}${lineupLabel(p,g.id)}
 </div>`).join("")}</div></section>`;
 }
 }
+
 if(!data.games.length&&!search.trim()){
 html+=`<p class="muted">No games are saved for today.</p>`;
 }
+
 }else{
 const g=data.games.find(g=>String(g.id)===game);
+
 if(g){
 html=`<h2>${esc(g.away)} @ ${esc(g.home)}</h2>
 <div class="row">
 ${["All",g.away,g.home].map(t=>
 `<button data-team="${esc(t)}" aria-pressed="${t===team}">${esc(t)}</button>`
-).join("")}</div>
+).join("")}
+</div>
+
+${teamCards(g)}
+
 ${team==="All"
 ?`<div class="matchup-columns">
 ${[[g.away_id,g.away],[g.home_id,g.home]].map(([id,abbreviation])=>
 `<section class="team-column"
 aria-label="${esc(abbreviation)} team stats and players">
-${teamCards(g,id)}
 ${data.players.filter(p=>
 p.team_id===id&&matches(p)&&eligible(p,g.id)
 ).sort((a,b)=>playerOrder(a,b,g.id)).map(playerCard).join("")}
-</section>`).join("")}</div>`
-:teamCards(g)+data.players.filter(p=>
+</section>`).join("")}
+</div>`
+:data.players.filter(p=>
 [g.home_id,g.away_id].includes(p.team_id)&&
 teamCode(p.team)===teamCode(team)&&matches(p)&&eligible(p,g.id)
 ).sort((a,b)=>playerOrder(a,b,g.id)).map(playerCard).join("")}`;
 }
 }
+
 q("#content").innerHTML=html;
 renderFavorites();
 if(open!==undefined)activePlayer=Number(open);
