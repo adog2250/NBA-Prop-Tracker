@@ -1,13 +1,25 @@
-"""Save official team box scores for current-season team cards."""
+"""Collect complete final team box scores; repair missing/incomplete rows."""
 
+import argparse
 import os
-
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import psycopg
-
 from backfill_season import fetch, get_teams
+
+
+FIELDS = (
+    "rebounds",
+    "assists",
+    "turnovers",
+    "field_goals_made",
+    "field_goals_attempted",
+    "threes_made",
+    "threes_attempted",
+    "free_throws_made",
+    "free_throws_attempted",
+)
 
 
 def count(value):
@@ -20,7 +32,7 @@ def count(value):
         return None
 
     if not text.isdigit():
-        raise ValueError("Invalid team box-score count")
+        raise ValueError(f"Invalid team count: {value!r}")
 
     return int(text)
 
@@ -37,7 +49,9 @@ def shot_pair(value):
     pieces = text.split("-")
 
     if len(pieces) != 2:
-        raise ValueError("Invalid made/attempted team total")
+        raise ValueError(
+            f"Invalid made/attempted total: {value!r}"
+        )
 
     made, attempted = (
         count(piece)
@@ -49,7 +63,9 @@ def shot_pair(value):
         or attempted is None
         or made > attempted
     ):
-        raise ValueError("Invalid made/attempted team total")
+        raise ValueError(
+            f"Invalid made/attempted total: {value!r}"
+        )
 
     return made, attempted
 
@@ -79,7 +95,7 @@ def team_values(group):
     if turnovers is None:
         turnovers = stats.get("turnovers")
 
-    return (
+    values = (
         count(stats.get("totalRebounds")),
         count(stats.get("assists")),
         count(turnovers),
@@ -88,8 +104,32 @@ def team_values(group):
         *ft,
     )
 
+    if any(value is None for value in values):
+        raise ValueError(
+            "Incomplete team totals; saved data retained"
+        )
+
+    if threes[0] > fg[0] or threes[1] > fg[1]:
+        raise ValueError(
+            "Three-point totals exceed field-goal totals"
+        )
+
+    return values
+
 
 def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__
+    )
+
+    parser.add_argument(
+        "--full-season",
+        action="store_true",
+        help="Recheck every saved final game this season",
+    )
+
+    args = parser.parse_args()
+
     today = datetime.now(
         ZoneInfo("America/Chicago")
     ).date()
@@ -104,6 +144,24 @@ def main():
     failed = []
     updated = 0
 
+    # These identifiers are fixed constants,
+    # never user input.
+    complete = " AND ".join(
+        f"s.{field} IS NOT NULL"
+        for field in FIELDS
+    )
+
+    columns = ", ".join(FIELDS)
+
+    updates = ", ".join(
+        f"{field} = EXCLUDED.{field}"
+        for field in FIELDS
+    )
+
+    placeholders = ", ".join(
+        ["%s"] * (2 + len(FIELDS))
+    )
+
     with psycopg.connect(
         os.environ["DATABASE_URL"],
         connect_timeout=15,
@@ -116,7 +174,7 @@ def main():
                 teams["WSH"] = teams["WAS"]
 
             cursor.execute(
-                """
+                f"""
                 SELECT
                     g.id,
                     g.home_team_id,
@@ -126,13 +184,16 @@ def main():
                   AND g.game_date >= %s
                   AND g.game_date <= %s
                   AND (
-                    g.game_date >= %s::date - 7
+                    %s
+
+                    OR g.game_date >= %s::date - 7
 
                     OR NOT EXISTS (
                         SELECT 1
                         FROM team_game_stats s
                         WHERE s.game_id = g.id::text
                           AND s.team_id = g.home_team_id
+                          AND {complete}
                     )
 
                     OR NOT EXISTS (
@@ -140,15 +201,26 @@ def main():
                         FROM team_game_stats s
                         WHERE s.game_id = g.id::text
                           AND s.team_id = g.away_team_id
+                          AND {complete}
                     )
                   )
                 ORDER BY g.game_date DESC, g.id DESC
                 """,
-                (first, today, today),
+                (
+                    first,
+                    today,
+                    args.full_season,
+                    today,
+                ),
             )
 
             games = cursor.fetchall()
             connection.commit()
+
+            print(
+                f"Final games to check: {len(games)}",
+                flush=True,
+            )
 
             for game_id, home_id, away_id in games:
                 try:
@@ -162,17 +234,19 @@ def main():
                             "ESPN summary unavailable"
                         )
 
-                    competitions = (
-                        (payload.get("header") or {}).get(
-                            "competitions"
-                        )
-                        or []
-                    )
+                    header = payload.get("header") or {}
 
-                    if not competitions:
+                    if (
+                        header.get("id")
+                        and str(header["id"]) != str(game_id)
+                    ):
                         raise ValueError(
-                            "Missing game status"
+                            "Summary event ID does not match"
                         )
+
+                    competitions = (
+                        header.get("competitions") or []
+                    )
 
                     status = (
                         (
@@ -180,14 +254,12 @@ def main():
                             or {}
                         ).get("type")
                         or {}
-                    )
+                    ) if competitions else {}
 
                     if status.get("completed") is not True:
-                        print(
-                            f"{game_id}: skipped unfinished event",
-                            flush=True,
+                        raise ValueError(
+                            "ESPN has not marked this game final"
                         )
-                        continue
 
                     rows = {}
 
@@ -214,54 +286,23 @@ def main():
 
                     if set(rows) != {home_id, away_id}:
                         raise ValueError(
-                            "Missing one team's box score"
+                            "Missing one team's complete box score"
                         )
 
+                    # Both teams must validate before
+                    # either row is written.
                     for team_id, values in rows.items():
-                        if any(
-                            value is None
-                            for value in values
-                        ):
-                            raise ValueError(
-                                "Incomplete team totals; will retry"
-                            )
-
                         cursor.execute(
-                            """
+                            f"""
                             INSERT INTO team_game_stats (
                                 game_id,
                                 team_id,
-                                rebounds,
-                                assists,
-                                turnovers,
-                                field_goals_made,
-                                field_goals_attempted,
-                                threes_made,
-                                threes_attempted,
-                                free_throws_made,
-                                free_throws_attempted
+                                {columns}
                             )
-                            VALUES (
-                                %s, %s, %s, %s, %s, %s,
-                                %s, %s, %s, %s, %s
-                            )
+                            VALUES ({placeholders})
                             ON CONFLICT (game_id, team_id)
                             DO UPDATE SET
-                                rebounds = EXCLUDED.rebounds,
-                                assists = EXCLUDED.assists,
-                                turnovers = EXCLUDED.turnovers,
-                                field_goals_made =
-                                    EXCLUDED.field_goals_made,
-                                field_goals_attempted =
-                                    EXCLUDED.field_goals_attempted,
-                                threes_made =
-                                    EXCLUDED.threes_made,
-                                threes_attempted =
-                                    EXCLUDED.threes_attempted,
-                                free_throws_made =
-                                    EXCLUDED.free_throws_made,
-                                free_throws_attempted =
-                                    EXCLUDED.free_throws_attempted,
+                                {updates},
                                 updated_at = NOW()
                             """,
                             (
