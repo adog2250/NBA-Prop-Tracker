@@ -57,6 +57,56 @@ def season_bounds(day):
 
 
 def summarize_teams(rows):
+    averages = (
+        ("rebounds", "own", "rebounds"),
+        ("rebounds_allowed", "opponent", "rebounds"),
+        ("assists", "own", "assists"),
+        ("assists_allowed", "opponent", "assists"),
+        ("turnovers", "own", "turnovers"),
+        ("turnovers_forced", "opponent", "turnovers"),
+        ("threes_made", "own", "threes_made"),
+        ("threes_allowed", "opponent", "threes_made"),
+    )
+
+    shooting = (
+        (
+            "fg_pct",
+            "own",
+            "field_goals_made",
+            "field_goals_attempted",
+        ),
+        (
+            "fg_pct_allowed",
+            "opponent",
+            "field_goals_made",
+            "field_goals_attempted",
+        ),
+        (
+            "three_pct",
+            "own",
+            "threes_made",
+            "threes_attempted",
+        ),
+        (
+            "three_pct_allowed",
+            "opponent",
+            "threes_made",
+            "threes_attempted",
+        ),
+        (
+            "ft_pct",
+            "own",
+            "free_throws_made",
+            "free_throws_attempted",
+        ),
+        (
+            "ft_pct_allowed",
+            "opponent",
+            "free_throws_made",
+            "free_throws_attempted",
+        ),
+    )
+
     grouped = {}
 
     for (
@@ -75,108 +125,104 @@ def summarize_teams(rows):
         ):
             continue
 
-        item = grouped.setdefault(team_id, {
-            "id": team_id,
-            "name": name,
-            "team": abbreviation,
-            "games": 0,
-            "wins": 0,
-            "losses": 0,
-            "_points": [],
-            "_allowed": [],
-            "_rebounds": [],
-            "_rebounds_allowed": [],
-            "_assists": [],
-            "_turnovers": [],
-            "_fg": [],
-            "_three": [],
-            "_ft": [],
-        })
+        if team_id not in grouped:
+            grouped[team_id] = {
+                "id": team_id,
+                "name": name,
+                "team": abbreviation,
+                "games": 0,
+                "wins": 0,
+                "losses": 0,
+                "_points": [],
+                "_points_allowed": [],
+                "_averages": {
+                    key: []
+                    for key, _, _ in averages
+                },
+                "_shooting": {
+                    key: []
+                    for key, _, _, _ in shooting
+                },
+            }
 
-        own = own or {}
-        opponent = opponent or {}
+        item = grouped[team_id]
+
+        sources = {
+            "own": own or {},
+            "opponent": opponent or {},
+        }
 
         item["games"] += 1
         item["wins" if scored > allowed else "losses"] += 1
-
         item["_points"].append(float(scored))
-        item["_allowed"].append(float(allowed))
+        item["_points_allowed"].append(float(allowed))
 
-        for target, source, field in (
-            ("_rebounds", own, "rebounds"),
-            ("_rebounds_allowed", opponent, "rebounds"),
-            ("_assists", own, "assists"),
-            ("_turnovers", own, "turnovers"),
-        ):
-            if source.get(field) is not None:
-                item[target].append(float(source[field]))
+        for key, side, field in averages:
+            value = sources[side].get(field)
 
-        for target, made, attempted in (
-            (
-                "_fg",
-                "field_goals_made",
-                "field_goals_attempted",
-            ),
-            (
-                "_three",
-                "threes_made",
-                "threes_attempted",
-            ),
-            (
-                "_ft",
-                "free_throws_made",
-                "free_throws_attempted",
-            ),
-        ):
+            if value is not None:
+                item["_averages"][key].append(float(value))
+
+        for key, side, made, attempted in shooting:
+            source = sources[side]
+
             if (
-                own.get(made) is not None
-                and own.get(attempted) is not None
+                source.get(made) is not None
+                and source.get(attempted) is not None
             ):
-                item[target].append((
-                    float(own[made]),
-                    float(own[attempted]),
+                item["_shooting"][key].append((
+                    float(source[made]),
+                    float(source[attempted]),
                 ))
 
     for item in grouped.values():
-        item["box_games"] = len(item["_rebounds"])
+        item["metric_games"] = {}
 
-        item["opponent_box_games"] = len(
-            item["_rebounds_allowed"]
-        )
+        for key in ("points", "points_allowed"):
+            values = item.pop("_" + key)
 
-        for target, source in (
-            ("points", "_points"),
-            ("points_allowed", "_allowed"),
-            ("rebounds", "_rebounds"),
-            ("rebounds_allowed", "_rebounds_allowed"),
-            ("assists", "_assists"),
-            ("turnovers", "_turnovers"),
-        ):
-            values = item.pop(source)
-
-            item[target] = (
+            item[key] = (
                 sum(values) / len(values)
                 if values
                 else None
             )
 
-        for target, source in (
-            ("fg_pct", "_fg"),
-            ("three_pct", "_three"),
-            ("ft_pct", "_ft"),
-        ):
-            values = item.pop(source)
+            item["metric_games"][key] = len(values)
 
-            attempts = sum(
-                pair[1]
-                for pair in values
+        for key, values in item.pop("_averages").items():
+            item[key] = (
+                sum(values) / len(values)
+                if values
+                else None
             )
 
-            item[target] = (
-                100 * sum(pair[0] for pair in values) / attempts
+            item["metric_games"][key] = len(values)
+
+        for key, values in item.pop("_shooting").items():
+            attempts = sum(
+                attempted
+                for _, attempted in values
+            )
+
+            item[key] = (
+                100 * sum(made for made, _ in values) / attempts
                 if attempts
                 else None
             )
+
+            item["metric_games"][key] = len(values)
+
+        item["box_games"] = (
+            item["metric_games"]["rebounds"]
+        )
+
+        item["opponent_box_games"] = (
+            item["metric_games"]["rebounds_allowed"]
+        )
+
+        item["threes_allowed_games"] = (
+            item["metric_games"]["threes_allowed"]
+        )
 
     return grouped
 
