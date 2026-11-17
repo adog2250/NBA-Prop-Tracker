@@ -2,6 +2,13 @@ name: NBA Team Stats
 
 on:
   workflow_dispatch:
+    inputs:
+      full_season:
+        description: Recheck every saved final game this season
+        required: false
+        type: boolean
+        default: true
+
   schedule:
     - cron: "17,47 * * * *"
 
@@ -33,4 +40,10 @@ jobs:
       - name: Collect team stats
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python collector/sync_team_stats.py
+          FULL_SEASON: ${{ github.event_name == 'workflow_dispatch' && inputs.full_season || false }}
+        run: |
+          if [ "$FULL_SEASON" = "true" ]; then
+            python collector/sync_team_stats.py --full-season
+          else
+            python collector/sync_team_stats.py
+          fi
