@@ -14,6 +14,19 @@ BLOCKED = {"Out", "Doubtful"}
 POSITIONS = ("pg", "sg", "sf", "pf", "c")
 
 
+def team_code(value):
+    code = str(value or "").upper()
+
+    return {
+        "GS": "GSW",
+        "NY": "NYK",
+        "SA": "SAS",
+        "NO": "NOP",
+        "UTAH": "UTA",
+        "WSH": "WAS",
+    }.get(code, code)
+
+
 def athlete_id(athlete):
     raw = str(athlete.get("id") or "")
 
@@ -37,7 +50,10 @@ def injury_status(injury):
 
     options = (
         (
-            {"OUT", "O", "IR", "INJURED RESERVE", "SUSPENDED"},
+            {
+                "OUT", "O", "IR",
+                "INJURED RESERVE", "SUSPENDED",
+            },
             "Out",
         ),
         (
@@ -45,7 +61,10 @@ def injury_status(injury):
             "Doubtful",
         ),
         (
-            {"QUESTIONABLE", "Q", "GTD", "DAY-TO-DAY", "DTD"},
+            {
+                "QUESTIONABLE", "Q", "GTD",
+                "DAY-TO-DAY", "DTD",
+            },
             "Questionable",
         ),
         (
@@ -58,7 +77,9 @@ def injury_status(injury):
         if values & aliases:
             return label
 
-    return str(injury.get("status") or "Unknown")
+    return str(
+        injury.get("status") or "Unknown"
+    )
 
 
 def injury_map(payload, abbreviation):
@@ -70,7 +91,7 @@ def injury_map(payload, abbreviation):
             or ""
         ).upper()
 
-        if code != abbreviation:
+        if team_code(code) != team_code(abbreviation):
             continue
 
         for injury in group.get("injuries") or []:
@@ -87,7 +108,68 @@ def injury_map(payload, abbreviation):
     return found
 
 
-def confirmed_starters(payload, abbreviation, eligible):
+def resolve_statuses(
+    payload,
+    abbreviation,
+    eligible,
+    previous,
+    announced=(),
+):
+    fresh = injury_map(
+        payload,
+        abbreviation,
+    )
+
+    report_present = False
+
+    for group in payload.get("injuries") or []:
+        code = (
+            group.get("team") or {}
+        ).get("abbreviation")
+
+        injuries = group.get("injuries")
+
+        if team_code(code) != team_code(abbreviation):
+            continue
+
+        if isinstance(injuries, list) and all(
+            isinstance(item, dict)
+            and athlete_id(
+                item.get("athlete") or {}
+            ) is not None
+            for item in injuries
+        ):
+            report_present = True
+
+    resolved = {}
+
+    for pid in eligible:
+        status = fresh.get(pid)
+
+        if status in {
+            "Out",
+            "Doubtful",
+            "Questionable",
+            "Probable",
+        }:
+            resolved[pid] = status
+
+        elif pid in announced or (
+            pid not in fresh and report_present
+        ):
+            resolved[pid] = "Not listed"
+
+        else:
+            resolved[pid] = previous.get(pid)
+
+    return resolved
+
+
+def confirmed_starters(
+    payload,
+    abbreviation,
+    eligible,
+):
     groups = (
         (payload.get("boxscore") or {}).get("players")
         or []
@@ -99,7 +181,7 @@ def confirmed_starters(payload, abbreviation, eligible):
             or ""
         ).upper()
 
-        if code != abbreviation:
+        if team_code(code) != team_code(abbreviation):
             continue
 
         starters = set()
@@ -122,7 +204,11 @@ def confirmed_starters(payload, abbreviation, eligible):
     return None
 
 
-def projected_starters(payload, eligible, statuses):
+def projected_starters(
+    payload,
+    eligible,
+    statuses,
+):
     for chart in payload.get("depthchart") or []:
         positions = chart.get("positions") or {}
         chosen = set()
@@ -210,6 +296,42 @@ def main():
 
             cursor.execute(
                 """
+                SELECT
+                    game_id,
+                    player_id,
+                    team_id,
+                    injury_status
+                FROM game_player_availability
+                WHERE game_id = ANY(%s::text[])
+                """,
+                ([str(gid) for gid, _, _ in games],),
+            )
+
+            previous_statuses = {
+                (str(gid), pid, tid): status
+                for gid, pid, tid, status in cursor.fetchall()
+            }
+
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (player_id)
+                    player_id,
+                    injury_status
+                FROM game_player_availability
+                WHERE injury_status IS NOT NULL
+                ORDER BY
+                    player_id,
+                    checked_at DESC,
+                    game_id DESC
+                """
+            )
+
+            latest_statuses = dict(
+                cursor.fetchall()
+            )
+
+            cursor.execute(
+                """
                 SELECT id, current_team_id
                 FROM players
                 WHERE is_active = TRUE
@@ -250,15 +372,40 @@ def main():
                         continue
 
                     try:
-                        statuses = injury_map(
+                        previous = {
+                            pid: (
+                                previous_statuses.get(
+                                    (str(gid), pid, tid)
+                                )
+                                or latest_statuses.get(pid)
+                            )
+                            for pid in eligible
+                        }
+
+                        announced = confirmed_starters(
                             summary,
                             code,
+                            eligible,
+                        ) or ()
+
+                        statuses = resolve_statuses(
+                            summary,
+                            code,
+                            eligible,
+                            previous,
+                            announced,
                         )
+
+                        lineup_eligible = {
+                            pid
+                            for pid in eligible
+                            if statuses.get(pid) not in BLOCKED
+                        }
 
                         starters = confirmed_starters(
                             summary,
                             code,
-                            eligible,
+                            lineup_eligible,
                         )
 
                         source = (
@@ -284,12 +431,6 @@ def main():
 
                         for pid in eligible:
                             status = statuses.get(pid)
-
-                            if (
-                                status is None
-                                and "injuries" in summary
-                            ):
-                                status = "Not listed"
 
                             cursor.execute(
                                 """
