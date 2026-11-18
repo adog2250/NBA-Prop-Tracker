@@ -229,27 +229,49 @@ button[data-stat]::after,button[data-window]::after,button[data-venue]::after,bu
 (() => {
 const q=selector=>document.querySelector(selector);
 const sport=new URLSearchParams(location.search).get("sport")==="nfl"?"nfl":"nba";
+
 const nflLabels={
-PASS_YDS:"Pass yards",PASS_TD:"Pass TD",PASS_ATT:"Pass attempts",
-PASS_CMP:"Completions",INT:"Interceptions thrown",
-RUSH_YDS:"Rush yards",RUSH_ATT:"Carries",RUSH_TD:"Rush TD",
-REC_YDS:"Rec yards",REC:"Receptions",TGTS:"Targets",REC_TD:"Rec TD",
-FGM:"FG made",FGA:"FG attempts",XPM:"XP made",XPA:"XP attempts",
-TACKLES:"Tackles",SACKS:"Sacks",DEF_INT:"Defensive INT",
-PD:"Passes defended",FUM:"Fumbles",FUM_LOST:"Fumbles lost"
+PASS_YDS:"Pass yards",
+PASS_TD:"Pass TD",
+PASS_ATT:"Pass attempts",
+PASS_CMP:"Completions",
+PASS_RUSH_YDS:"Pass + rush yards",
+INT:"Interceptions thrown",
+RUSH_YDS:"Rush yards",
+RUSH_ATT:"Carries",
+RUSH_TD:"Rush TD",
+REC_YDS:"Rec yards",
+REC:"Receptions",
+TGTS:"Targets",
+REC_TD:"Rec TD",
+FGM:"FG made",
+FGA:"FG attempts",
+XPM:"XP made",
+XPA:"XP attempts",
+TACKLES:"Tackles",
+SACKS:"Sacks",
+DEF_INT:"Defensive INT",
+PD:"Passes defended",
+FUM:"Fumbles",
+FUM_LOST:"Fumbles lost"
 };
+
 const cats=sport==="nfl"?Object.keys(nflLabels):
 ["PTS","REB","AST","3PM","PR","PA","RA","PRA","STL","BLK"];
+
 const toId=value=>sport==="nfl"?String(value):Number(value);
 const label=key=>sport==="nfl"?(nflLabels[key]||key):key;
+
 let data={players:[],games:[],team_stats:{}};
 let game="all",team="All",stat=sport==="nfl"?"PASS_YDS":"PTS",n=5,venue="All";
 let minutes=false,search="",myPicks=false;
 let activePlayer=null;
 let picks=[],favorites=[],favoriteTeams=[];
+
 const storageKey=sport==="nfl"?"zenstats-nfl-picks-v1":"nba-prop-tracker-picks-v1";
 const favoritesKey=sport==="nfl"?"zenstats-nfl-favorite-players-v1":"zenstats-favorite-players-v1";
 const favoriteTeamsKey=sport==="nfl"?"zenstats-nfl-favorite-teams-v1":"zenstats-favorite-teams-v1";
+
 const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({
 "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
 }[c]));
@@ -269,6 +291,7 @@ return Array.isArray(stored)
 :Number.isInteger(id)))]:[];
 }catch(error){return [];}
 }
+
 favorites=loadFavoriteIds(favoritesKey);
 favoriteTeams=loadFavoriteIds(favoriteTeamsKey);
 
@@ -300,8 +323,11 @@ label+" could not be saved on this device; they will last for this session only.
 
 function val(log,key){
 const combinations={
-PR:["PTS","REB"],PA:["PTS","AST"],RA:["REB","AST"],
-PRA:["PTS","REB","AST"]
+PR:["PTS","REB"],
+PA:["PTS","AST"],
+RA:["REB","AST"],
+PRA:["PTS","REB","AST"],
+PASS_RUSH_YDS:["PASS_YDS","RUSH_YDS"]
 };
 const fields=combinations[key]||[key];
 return fields.every(f=>typeof log[f]==="number"&&Number.isFinite(log[f]))
@@ -312,6 +338,7 @@ function avg(player,key){
 const values=player.logs.map(log=>val(log,key)).filter(v=>v!==null);
 return values.length?values.reduce((a,b)=>a+b,0)/values.length:null;
 }
+
 const fmt=v=>v===null?"—":v.toFixed(1);
 
 function teamCode(value){
@@ -358,6 +385,7 @@ return venue==="All"||log.home===(venue==="Home");
 
 const matches=player=>
 player.name.toLowerCase().includes(search.trim().toLowerCase());
+
 const selected=(id,side)=>picks.some(p=>
 p.id===id&&p.stat===stat&&p.side===side);
 
@@ -515,7 +543,31 @@ ${above>below?"Above":"Below"} ${Math.max(above,below)}/${games.length}
 
 function playerCats(player){
 if(sport==="nba")return cats;
-return cats.filter(key=>player.logs.some(log=>val(log,key)!==null));
+
+const position=String(player.position||"").trim().toUpperCase();
+
+const groups={
+QB:["PASS_YDS","RUSH_YDS","PASS_RUSH_YDS","PASS_CMP"],
+RB:["RUSH_YDS","RUSH_ATT","RUSH_TD","REC_YDS","REC","TGTS","REC_TD"],
+FB:["RUSH_YDS","RUSH_ATT","REC_YDS","REC","TGTS"],
+WR:["REC_YDS","REC","TGTS","REC_TD"],
+TE:["REC_YDS","REC","TGTS","REC_TD"],
+K:["FGM","FGA","XPM","XPA"],
+PK:["FGM","FGA","XPM","XPA"]
+};
+
+const keys=[...(groups[position]||[])];
+
+if(
+["WR","TE"].includes(position)&&
+player.logs.some(log=>
+Number.isFinite(log.RUSH_ATT)&&log.RUSH_ATT>0)
+){
+keys.push("RUSH_YDS","RUSH_ATT","RUSH_TD");
+}
+
+return keys.filter(key=>
+player.logs.some(log=>val(log,key)!==null));
 }
 
 function primaryStat(player){
@@ -536,46 +588,64 @@ if(sport==="nba"){
 return `PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} · AST ${fmt(avg(player,"AST"))}`;
 }
 const defaults={
-QB:["PASS_YDS","PASS_TD","RUSH_YDS"],
-RB:["RUSH_YDS","RUSH_ATT","REC"],
+QB:["PASS_YDS","RUSH_YDS","PASS_RUSH_YDS"],
+RB:["RUSH_YDS","REC","TGTS"],
 FB:["RUSH_YDS","REC"],
 WR:["REC_YDS","REC","TGTS"],
 TE:["REC_YDS","REC","TGTS"],
 K:["FGM","XPM"],PK:["FGM","XPM"]
 };
-return (defaults[player.position]||["TACKLES","SACKS","DEF_INT"])
+return (defaults[player.position]||[])
 .filter(key=>avg(player,key)!==null)
 .map(key=>`${esc(label(key))} ${fmt(avg(player,key))}`).join(" · ");
 }
 
 function nflChart(player){
 const games=chosen(player,stat).slice().reverse();
+
 if(!games.length){
 return '<p class="muted">No saved games for this selection.</p>';
 }
+
 const average=avg(player,stat);
 const values=games.map(log=>val(log,stat));
+const completions=stat==="PASS_CMP";
+const attempts=completions
+?games.map(log=>log.PASS_ATT).filter(Number.isFinite):[];
+
 const low=Math.min(0,...values,average??0);
-const high=Math.max(1,...values,average??0);
+const high=Math.max(1,...values,...attempts,average??0);
 const span=high-low;
 const bottom=low<0?low-span*.12:0;
 const top=high+span*.2;
 const range=top-bottom;
 const position=value=>100*(value-bottom)/range;
+
 return `<div class="plot" role="group"
 aria-label="${esc(label(stat))}; select a bar for its box score.">
 <div class="nfl-bars">
 <div class="nfl-zero" style="bottom:${position(0)}%"></div>
 ${games.map(log=>{
 const value=val(log,stat);
+const attempt=Number.isFinite(log.PASS_ATT)?log.PASS_ATT:null;
 const color=value>average+1e-9?"#97ff42"
 :value<average-1e-9?"#ff667e":"#efd16a";
+
+const background=completions&&attempt!==null
+?`<div style="position:absolute;
+bottom:${position(0)}%;width:100%;
+height:${100*attempt/range}%;background:#596982">
+<span class="number" style="color:#bbc8dd">${attempt}</span>
+</div>`:"";
+
 return `<div class="column">
 <button class="box-hit" data-box="${player.id}:${esc(log.id)}"
-aria-label="${esc(player.name)}, ${esc(log.date)}, ${esc(log.opp)}, ${value} ${esc(label(stat))}"></button>
+aria-label="${esc(player.name)}, ${esc(log.date)}, ${esc(log.opp)}, ${value} ${esc(label(stat))}${completions&&attempt!==null?`, ${attempt} attempts`:""}"></button>
+${background}
 <div class="bar" style="position:absolute;
 bottom:${position(Math.min(0,value))}%;
 height:${100*Math.abs(value)/range}%;
+${completions?"left:19%;width:62%;":""}
 background:${color}">
 <span class="number">${value}</span></div>
 <span class="opponent">
@@ -590,6 +660,7 @@ style="bottom:${position(average)}%">
 <span>AVG ${fmt(average)}</span></div>`:""}
 </div></div>
 <p class="muted">
+${completions?"Muted background: attempts · Colored bar: completions<br>":""}
 Green: above · Red: below · Yellow: equal · White: season average
 </p>`;
 }
@@ -603,10 +674,16 @@ return log.away_team&&log.home_team
 function showBox(player,log){
 const number=v=>Number.isFinite(v)?String(v):"—";
 const pair=(made,attempted)=>number(made)+" / "+number(attempted);
+
 const rows=sport==="nfl"
-?Object.entries(nflLabels)
-.filter(([key])=>Number.isFinite(log[key]))
-.map(([key,title])=>[title,number(log[key])])
+?playerCats(player)
+.filter(key=>val(log,key)!==null)
+.map(key=>[
+key==="PASS_CMP"?"Completions / attempts":label(key),
+key==="PASS_CMP"
+?pair(log.PASS_CMP,log.PASS_ATT)
+:number(val(log,key))
+])
 :[
 ["Minutes",Number.isFinite(log.MIN)?log.MIN.toFixed(1):"—"],
 ["Points",number(log.PTS)],["Rebounds",number(log.REB)],
@@ -620,6 +697,7 @@ const rows=sport==="nfl"
 ["Offensive rebounds",number(log.OREB)],
 ["Defensive rebounds",number(log.DREB)]
 ];
+
 q("#box-title").textContent=player.name+" · Box Score";
 q("#box-content").innerHTML=identity(player)+`
 <p class="muted">${esc(log.date)} · ${esc(matchupLabel(log))}</p>
@@ -711,6 +789,7 @@ const games=chosen(player,key);
 const a=avg(player,stat);
 const recent=games.length
 ?fmt(games.reduce((s,g)=>s+val(g,key),0)/games.length):"—";
+
 return `<section data-player="${player.id}">
 <div>
 <span class="player-heading">${identity(player,true)}</span>
@@ -887,6 +966,7 @@ ${esc(data.season)} · Saved final games only.
 function render(open){
 document.querySelectorAll("[data-sport]").forEach(button=>
 button.setAttribute("aria-pressed",String(button.dataset.sport===sport)));
+
 q("#nav").innerHTML=`
 <button data-game="all"
 aria-pressed="${game==="all"&&!myPicks}">All Games</button>
@@ -977,12 +1057,15 @@ html=html.replace(
 "No games are saved for this week."
 );
 }
+
 q("#content").innerHTML=html;
 renderFavorites();
+
 if(sport==="nfl"){
 q("#favorites").innerHTML=q("#favorites").innerHTML
 .replace(/Today/g,"This week").replace(/today's/g,"this week's");
 }
+
 if(open!==undefined)activePlayer=toId(open);
 renderPlayerPopup();
 }
@@ -1155,18 +1238,22 @@ sport==="nfl"?"/api/nfl/dashboard":"/api/dashboard",
 const result=await response.json();
 if(!response.ok)throw Error(result.error);
 data=result;
+
 q("#games-title").textContent=sport==="nfl"
 ?`NFL · Week ${result.week??"—"}`:"Today's Games";
+
 q("#favorites").setAttribute(
 "aria-label",
 sport==="nfl"
 ?"Favorite players and teams scheduled this week"
 :"Favorite players and teams scheduled today"
 );
+
 q("#status").textContent=
 `${result.date} · ${result.season} · Saved game statistics`+
 (result.updated_at
 ?" · Data updated "+new Date(result.updated_at).toLocaleString():"");
+
 render();
 }catch(error){
 q("#status").textContent=navigator.onLine
@@ -1179,6 +1266,7 @@ render();
 q("#status").textContent=`Loading saved ${sport.toUpperCase()} data…`;
 render();
 load();
+
 if("serviceWorker" in navigator){
 navigator.serviceWorker.register("/service-worker.js").catch(()=>{});
 }
