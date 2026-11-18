@@ -1,4 +1,4 @@
-"""Load the current NFL season schedule without changing NBA data."""
+"""Load NFL schedules using ESPN monthly date requests."""
 
 import os
 from datetime import datetime
@@ -17,25 +17,35 @@ def current_season():
 def score_value(value):
     if value is None or value == "":
         return None
+
     return int(value)
+
+
+def season_months(season):
+    for month in range(8, 13):
+        yield f"{season}{month:02d}"
+
+    for month in range(1, 8):
+        yield f"{season + 1}{month:02d}"
 
 
 def collect_games(season):
     games = {}
-    date_range = f"{season}0801-{season + 1}0731"
 
-    for season_type in (1, 2, 3):
+    for month in season_months(season):
+        # ESPN accepts YYYYMM. Avoid the rejected date-range format.
         payload = fetch(
-            f"{BASE}/scoreboard"
-            f"?dates={date_range}"
-            f"&seasontype={season_type}"
-            f"&limit=1000"
+            f"{BASE}/scoreboard?dates={month}&limit=1000"
         )
 
         events = payload.get("events")
 
         if not isinstance(events, list):
-            raise ValueError("Schedule response has no event list")
+            raise ValueError(
+                f"Schedule response for {month} has no event list"
+            )
+
+        imported = 0
 
         for event in events:
             event_season = event.get("season") or {}
@@ -43,14 +53,17 @@ def collect_games(season):
             if int(event_season.get("year", 0)) != season:
                 continue
 
-            actual_type = int(
-                event_season.get("type") or season_type
-            )
+            season_type = int(event_season.get("type") or 0)
+
+            if season_type not in (1, 2, 3):
+                continue
 
             competitions = event.get("competitions") or []
 
             if len(competitions) != 1:
-                raise ValueError("Unexpected game competition data")
+                raise ValueError(
+                    f"Unexpected competition data: {event.get('id')}"
+                )
 
             competition = competitions[0]
             competitors = competition.get("competitors") or []
@@ -72,14 +85,18 @@ def collect_games(season):
             )
 
             if home is None or away is None:
-                raise ValueError("Game is missing home/away teams")
+                raise ValueError(
+                    f"Missing home/away teams: {event.get('id')}"
+                )
 
             game_id = str(event["id"])
             home_id = str(home["team"]["id"])
             away_id = str(away["team"]["id"])
 
             if home_id == away_id:
-                raise ValueError("Game has identical home/away teams")
+                raise ValueError(
+                    f"Identical home/away teams: {game_id}"
+                )
 
             starts_at = datetime.fromisoformat(
                 event["date"].replace("Z", "+00:00")
@@ -117,7 +134,7 @@ def collect_games(season):
             games[game_id] = (
                 game_id,
                 season,
-                actual_type,
+                season_type,
                 (event.get("week") or {}).get("number"),
                 starts_at,
                 home_id,
@@ -127,10 +144,17 @@ def collect_games(season):
                 away_score,
             )
 
+            imported += 1
+
+        print(
+            f"{month}: {imported} season games checked",
+            flush=True,
+        )
+
     if not games:
         raise ValueError(
-            f"No games returned for season {season}; "
-            "existing data was left unchanged."
+            f"No games returned for season {season}. "
+            "Existing data was left unchanged."
         )
 
     return list(games.values())
@@ -140,6 +164,8 @@ def main():
     season = int(
         os.environ.get("NFL_SEASON") or current_season()
     )
+
+    # Finish downloading and validating before changing the database.
     rows = collect_games(season)
 
     with psycopg.connect(
