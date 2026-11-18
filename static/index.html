@@ -180,6 +180,11 @@ button[data-stat]::after,button[data-window]::after,button[data-venue]::after,bu
 .team-comparison-panel{padding:5px}
 .comparison-team-name{gap:2px}
 }
+.sport-nav{justify-content:center;margin:0 0 8px}
+.nfl-bars{height:100%;position:relative;display:flex;gap:5px;background:repeating-linear-gradient(to top,transparent 0,transparent 37px,#ffffff15 38px)}
+.nfl-zero{position:absolute;left:0;right:0;border-top:1px solid #afbdd155;pointer-events:none}
+.nfl-mean{position:absolute;left:0;right:0;border-top:2px solid white;pointer-events:none;z-index:3}
+.nfl-mean span{position:absolute;right:0;bottom:0;font-size:11px;background:#1d283b}
 </style>
 </head>
 <body>
@@ -188,7 +193,11 @@ button[data-stat]::after,button[data-window]::after,button[data-venue]::after,bu
 <strong><span class="green">▥</span> ZenStats</strong>
 <button id="picks">My Picks (0)</button>
 </header>
-<h2>Today's Games</h2>
+<nav class="row sport-nav" aria-label="Sport">
+<button data-sport="nba">NBA</button>
+<button data-sport="nfl">NFL</button>
+</nav>
+<h2 id="games-title">Today's Games</h2>
 <p id="status" class="muted" role="status">Loading saved NBA data…</p>
 <nav id="nav" class="row" aria-label="Games"></nav>
 <input id="search" type="search" placeholder="Search players…" aria-label="Search players">
@@ -219,15 +228,28 @@ button[data-stat]::after,button[data-window]::after,button[data-venue]::after,bu
 <script>
 (() => {
 const q=selector=>document.querySelector(selector);
-const cats=["PTS","REB","AST","3PM","PR","PA","RA","PRA","STL","BLK"];
+const sport=new URLSearchParams(location.search).get("sport")==="nfl"?"nfl":"nba";
+const nflLabels={
+PASS_YDS:"Pass yards",PASS_TD:"Pass TD",PASS_ATT:"Pass attempts",
+PASS_CMP:"Completions",INT:"Interceptions thrown",
+RUSH_YDS:"Rush yards",RUSH_ATT:"Carries",RUSH_TD:"Rush TD",
+REC_YDS:"Rec yards",REC:"Receptions",TGTS:"Targets",REC_TD:"Rec TD",
+FGM:"FG made",FGA:"FG attempts",XPM:"XP made",XPA:"XP attempts",
+TACKLES:"Tackles",SACKS:"Sacks",DEF_INT:"Defensive INT",
+PD:"Passes defended",FUM:"Fumbles",FUM_LOST:"Fumbles lost"
+};
+const cats=sport==="nfl"?Object.keys(nflLabels):
+["PTS","REB","AST","3PM","PR","PA","RA","PRA","STL","BLK"];
+const toId=value=>sport==="nfl"?String(value):Number(value);
+const label=key=>sport==="nfl"?(nflLabels[key]||key):key;
 let data={players:[],games:[],team_stats:{}};
-let game="all",team="All",stat="PTS",n=5,venue="All";
+let game="all",team="All",stat=sport==="nfl"?"PASS_YDS":"PTS",n=5,venue="All";
 let minutes=false,search="",myPicks=false;
 let activePlayer=null;
 let picks=[],favorites=[],favoriteTeams=[];
-const storageKey="nba-prop-tracker-picks-v1";
-const favoritesKey="zenstats-favorite-players-v1";
-const favoriteTeamsKey="zenstats-favorite-teams-v1";
+const storageKey=sport==="nfl"?"zenstats-nfl-picks-v1":"nba-prop-tracker-picks-v1";
+const favoritesKey=sport==="nfl"?"zenstats-nfl-favorite-players-v1":"zenstats-favorite-players-v1";
+const favoriteTeamsKey=sport==="nfl"?"zenstats-nfl-favorite-teams-v1":"zenstats-favorite-teams-v1";
 const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({
 "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
 }[c]));
@@ -242,7 +264,9 @@ function loadFavoriteIds(key){
 try{
 const stored=JSON.parse(localStorage.getItem(key)||"[]");
 return Array.isArray(stored)
-?[...new Set(stored.filter(Number.isInteger))]:[];
+?[...new Set(stored.filter(id=>sport==="nfl"
+?typeof id==="string"&&/^\d+$/.test(id)
+:Number.isInteger(id)))]:[];
 }catch(error){return [];}
 }
 favorites=loadFavoriteIds(favoritesKey);
@@ -252,7 +276,9 @@ try{
 const saved=JSON.parse(localStorage.getItem(storageKey)||"[]");
 if(Array.isArray(saved)){
 picks=saved.filter(p=>
-Number.isInteger(p.id)&&typeof p.name==="string"&&
+(sport==="nfl"
+?typeof p.id==="string"&&/^\d+$/.test(p.id)
+:Number.isInteger(p.id))&&typeof p.name==="string"&&
 cats.includes(p.stat)&&["Over","Under"].includes(p.side)&&
 Number.isFinite(p.average));
 }
@@ -297,6 +323,10 @@ GS:"GSW",NY:"NYK",SA:"SAS",NO:"NOP",UTAH:"UTA",WSH:"WAS"
 
 function opponentLogo(value){
 const code=teamCode(value);
+if(sport==="nfl"){
+return "https://a.espncdn.com/i/teamlogos/nfl/500/"+
+encodeURIComponent(code.toLowerCase())+".png";
+}
 const slug=({
 GSW:"gs",NYK:"ny",SAS:"sa",NOP:"no",UTA:"utah",WAS:"wsh"
 })[code]||code.toLowerCase();
@@ -366,6 +396,13 @@ return player.availability?.[String(gameId)]||{};
 }
 
 function eligible(player,gameId=game){
+if(sport==="nfl"){
+const info=availabilityFor(player,gameId);
+return Boolean(info.checked_at)&&info.is_available!==false&&
+!["out","doubtful","injured reserve","suspended","pup","nfi","practice squad"]
+.some(status=>[info.injury_status,info.roster_status]
+.some(value=>String(value||"").toLowerCase()===status));
+}
 const status=String(
 availabilityFor(player,gameId).injury_status||""
 ).trim().toLowerCase();
@@ -397,7 +434,9 @@ function identity(player,showFavorite=false){
 player={...player,...(data.players.find(p=>p.id===player.id)||{})};
 const bio=[player.position,player.height,player.weight]
 .filter(Boolean).join(" · ");
-const url=player.id<0
+const url=sport==="nfl"
+?(player.headshot_url||`https://a.espncdn.com/i/headshots/nfl/players/full/${player.id}.png`)
+:player.id<0
 ?`https://a.espncdn.com/i/headshots/nba/players/full/${Math.abs(player.id)}.png`
 :`https://cdn.nba.com/headshots/nba/latest/260x190/${player.id}.png`;
 return `<span class="identity">
@@ -460,18 +499,99 @@ teams saved. Listed when their team is scheduled.</p>
 </section>`;
 }
 
-function trend(player){
-const a=avg(player,stat);
-const games=player.logs.filter(g=>val(g,stat)!==null).slice(0,n);
+function trend(player,key=stat){
+const a=avg(player,key);
+const games=player.logs.filter(g=>val(g,key)!==null).slice(0,n);
 if(a===null)return '<span class="muted">No saved history</span>';
-const above=games.filter(g=>val(g,stat)>a+1e-9).length;
-const below=games.filter(g=>val(g,stat)<a-1e-9).length;
+const above=games.filter(g=>val(g,key)>a+1e-9).length;
+const below=games.filter(g=>val(g,key)<a-1e-9).length;
 if(above===below){
 return `<span class="muted">Above / Below tied · ${above}/${games.length} each</span>`;
 }
 return `<span class="${above>below?"green":"red"}">
 ${above>below?"Above":"Below"} ${Math.max(above,below)}/${games.length}
 </span>`;
+}
+
+function playerCats(player){
+if(sport==="nba")return cats;
+return cats.filter(key=>player.logs.some(log=>val(log,key)!==null));
+}
+
+function primaryStat(player){
+if(sport==="nba")return stat;
+const available=playerCats(player);
+if(available.includes(stat))return stat;
+const defaults={
+QB:"PASS_YDS",RB:"RUSH_YDS",FB:"RUSH_YDS",
+WR:"REC_YDS",TE:"REC_YDS",K:"FGM",PK:"FGM"
+};
+const preferred=defaults[player.position];
+return available.includes(preferred)
+?preferred:(available[0]||"PASS_YDS");
+}
+
+function playerSummary(player){
+if(sport==="nba"){
+return `PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} · AST ${fmt(avg(player,"AST"))}`;
+}
+const defaults={
+QB:["PASS_YDS","PASS_TD","RUSH_YDS"],
+RB:["RUSH_YDS","RUSH_ATT","REC"],
+FB:["RUSH_YDS","REC"],
+WR:["REC_YDS","REC","TGTS"],
+TE:["REC_YDS","REC","TGTS"],
+K:["FGM","XPM"],PK:["FGM","XPM"]
+};
+return (defaults[player.position]||["TACKLES","SACKS","DEF_INT"])
+.filter(key=>avg(player,key)!==null)
+.map(key=>`${esc(label(key))} ${fmt(avg(player,key))}`).join(" · ");
+}
+
+function nflChart(player){
+const games=chosen(player,stat).slice().reverse();
+if(!games.length){
+return '<p class="muted">No saved games for this selection.</p>';
+}
+const average=avg(player,stat);
+const values=games.map(log=>val(log,stat));
+const low=Math.min(0,...values,average??0);
+const high=Math.max(1,...values,average??0);
+const span=high-low;
+const bottom=low<0?low-span*.12:0;
+const top=high+span*.2;
+const range=top-bottom;
+const position=value=>100*(value-bottom)/range;
+return `<div class="plot" role="group"
+aria-label="${esc(label(stat))}; select a bar for its box score.">
+<div class="nfl-bars">
+<div class="nfl-zero" style="bottom:${position(0)}%"></div>
+${games.map(log=>{
+const value=val(log,stat);
+const color=value>average+1e-9?"#97ff42"
+:value<average-1e-9?"#ff667e":"#efd16a";
+return `<div class="column">
+<button class="box-hit" data-box="${player.id}:${esc(log.id)}"
+aria-label="${esc(player.name)}, ${esc(log.date)}, ${esc(log.opp)}, ${value} ${esc(label(stat))}"></button>
+<div class="bar" style="position:absolute;
+bottom:${position(Math.min(0,value))}%;
+height:${100*Math.abs(value)/range}%;
+background:${color}">
+<span class="number">${value}</span></div>
+<span class="opponent">
+<img class="opponent-logo" src="${opponentLogo(log.opp)}"
+alt="${esc(log.opp)}" loading="lazy">
+<span class="logo-fallback" hidden>${esc(log.opp)}</span>
+<span class="game-date">${gameDate(log.date)}</span>
+</span></div>`;
+}).join("")}
+${average!==null?`<div class="nfl-mean"
+style="bottom:${position(average)}%">
+<span>AVG ${fmt(average)}</span></div>`:""}
+</div></div>
+<p class="muted">
+Green: above · Red: below · Yellow: equal · White: season average
+</p>`;
 }
 
 function matchupLabel(log){
@@ -483,7 +603,11 @@ return log.away_team&&log.home_team
 function showBox(player,log){
 const number=v=>Number.isFinite(v)?String(v):"—";
 const pair=(made,attempted)=>number(made)+" / "+number(attempted);
-const rows=[
+const rows=sport==="nfl"
+?Object.entries(nflLabels)
+.filter(([key])=>Number.isFinite(log[key]))
+.map(([key,title])=>[title,number(log[key])])
+:[
 ["Minutes",Number.isFinite(log.MIN)?log.MIN.toFixed(1):"—"],
 ["Points",number(log.PTS)],["Rebounds",number(log.REB)],
 ["Assists",number(log.AST)],
@@ -515,6 +639,7 @@ return match?`${Number(match[2])}/${Number(match[3])}`:"";
 }
 
 function chart(player){
+if(sport==="nfl")return nflChart(player);
 const key=minutes?"MIN":stat;
 const a=avg(player,key);
 const games=chosen(player,key).slice().reverse();
@@ -578,6 +703,9 @@ ${games.map(log=>`<tr>
 }
 
 function detail(player){
+if(sport==="nfl"&&!playerCats(player).includes(stat)){
+stat=primaryStat(player);
+}
 const key=minutes?"MIN":stat;
 const games=chosen(player,key);
 const a=avg(player,stat);
@@ -587,17 +715,16 @@ return `<section data-player="${player.id}">
 <div>
 <span class="player-heading">${identity(player,true)}</span>
 ${lineupLabel(player)}
-<span class="muted">
-PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} ·
-AST ${fmt(avg(player,"AST"))}
-</span></div>
+<span class="muted">${playerSummary(player)}</span>
+</div>
 <div class="row player-stat-tabs" style="margin-top:12px">
-${cats.map(k=>`<button data-stat="${k}"
-aria-pressed="${stat===k}">${k}</button>`).join("")}
+${playerCats(player).map(k=>`<button data-stat="${k}"
+aria-pressed="${stat===k}">${esc(label(k))}</button>`).join("")}
 </div>
-<div class="player-graph-mode" style="text-align:right;margin:9px 0">
+${sport==="nba"?`<div class="player-graph-mode"
+style="text-align:right;margin:9px 0">
 <button data-minutes>${minutes?"Stat Graph":"Minutes Graph"}</button>
-</div>
+</div>`:""}
 <div class="row player-venue" style="justify-content:flex-end;margin:9px 0">
 ${["All","Home","Away","Head-to-Head"].map(v=>
 `<button data-venue="${v}" aria-pressed="${venue===v}"
@@ -609,7 +736,7 @@ Against ${esc(opponentFor(player)||"the selected opponent")} ·
 ${esc(data.h2h_seasons||"current and previous season")}.
 Most recent saved meetings; season average stays current-season only.
 </p>`:""}
-<h3>Performance</h3>
+<h3>Performance${sport==="nfl"?` · ${esc(label(key))}`:""}</h3>
 <div class="row"><span class="muted">Last</span>
 ${[5,10,20].map(v=>`<button data-window="${v}"
 aria-pressed="${n===v}">${v}</button>`).join("")}
@@ -639,10 +766,8 @@ data-player-open="${player.id}"
 aria-haspopup="dialog" aria-label="Open ${esc(player.name)} stats"></button>
 <div class="player-open">
 ${identity(player,true)}${lineupLabel(player)}
-<span class="muted">
-PTS ${fmt(avg(player,"PTS"))} · REB ${fmt(avg(player,"REB"))} ·
-AST ${fmt(avg(player,"AST"))}
-</span></div></div>`;
+<span class="muted">${playerSummary(player)}</span>
+</div></div>`;
 }
 
 function renderPlayerPopup(){
@@ -676,7 +801,9 @@ const shown=[
 (onlyId===undefined||id===onlyId)&&
 (team==="All"||teamCode(team)===teamCode(abbreviation)));
 
-const rows=[
+const rows=sport==="nfl"
+?[["Points per game","points","points_allowed",false]]
+:[
 ["Points per game","points","points_allowed",false],
 ["Assists per game","assists","assists_allowed",false],
 ["Rebounds per game","rebounds","rebounds_allowed",false],
@@ -698,11 +825,9 @@ return `<td aria-label="${esc(coverage)}: ${esc(value)}">${value}</td>`;
 
 return `<section class="team-comparison-panel"
 aria-label="Team statistics for and allowed">
-
 <table class="team-comparison ${shown.length===1?"one-team":""}">
 <colgroup><col class="stat-label-col"></colgroup>
 ${shown.map(()=>"<colgroup><col><col></colgroup>").join("")}
-
 <thead>
 <tr>
 <th rowspan="3" scope="col" class="stat-label">Stat</th>
@@ -717,23 +842,20 @@ ${favoriteTeamButton(id,t?.name||abbreviation)}
 </th>`;
 }).join("")}
 </tr>
-
 <tr>
 ${shown.map(([id])=>{
 const t=data.team_stats?.[String(id)];
 return `<th colspan="2" class="comparison-record">
-Record ${t?`${t.wins}–${t.losses}`:"—"}
+Record ${t?`${t.wins}–${t.losses}${sport==="nfl"?`–${t.ties||0}`:""}`:"—"}
 </th>`;
 }).join("")}
 </tr>
-
 <tr>
 ${shown.map(()=>
 '<th scope="col">For</th><th scope="col">Let up</th>'
 ).join("")}
 </tr>
 </thead>
-
 <tbody>
 ${rows.map(([label,own,allowed,isPercent])=>`
 <tr>
@@ -745,7 +867,6 @@ return cell(t,own,isPercent)+cell(t,allowed,isPercent);
 </tr>`).join("")}
 </tbody>
 </table>
-
 <p class="muted comparison-note">
 ${esc(data.season)} · Saved final games only.
 </p>
@@ -753,6 +874,8 @@ ${esc(data.season)} · Saved final games only.
 }
 
 function render(open){
+document.querySelectorAll("[data-sport]").forEach(button=>
+button.setAttribute("aria-pressed",String(button.dataset.sport===sport)));
 q("#nav").innerHTML=`
 <button data-game="all"
 aria-pressed="${game==="all"&&!myPicks}">All Games</button>
@@ -770,19 +893,20 @@ if(myPicks){
 html="<h2>My Picks</h2>"+(picks.length
 ?picks.map((p,i)=>`<div class="group">
 ${identity(p)}
-<p>${p.side} season ${p.stat} average · ${fmt(p.average)}</p>
+<p>${p.side} season ${esc(label(p.stat))} average · ${fmt(p.average)}</p>
 <button data-remove="${i}">Remove</button>
 </div>`).join(""):'<p class="muted">No picks saved.</p>');
 
 }else if(game==="all"){
 html=`<div class="row" style="justify-content:space-between">
 <h2>Above & Below Season Average</h2>
-<span class="muted">Last ${n} · ${stat}</span></div>`;
+<span class="muted">Last ${n} · ${esc(label(stat))}</span></div>`;
 
 for(const g of data.games){
 const shown=[g.away_id,g.home_id].flatMap(id=>
 data.players.filter(p=>
-p.team_id===id&&matches(p)&&avg(p,stat)!==null&&
+p.team_id===id&&matches(p)&&avg(p,primaryStat(p))!==null&&
+(sport==="nba"||["QB","RB","FB","WR","TE","K","PK"].includes(p.position))&&
 eligible(p,g.id)&&starterRank(p,g.id)<2
 ).sort((a,b)=>playerOrder(a,b,g.id)).slice(0,2));
 
@@ -794,8 +918,10 @@ html+=`<section class="group">
 data-open="${p.id}" data-match="${esc(g.id)}"
 aria-haspopup="dialog" aria-label="Open ${esc(p.name)} stats"></button>
 ${identity(p,true)}${lineupLabel(p,g.id)}
-<p class="muted">Season ${stat} avg · ${fmt(avg(p,stat))}</p>
-<strong>${trend(p)}</strong>
+<p class="muted">
+Season ${esc(label(primaryStat(p)))} avg · ${fmt(avg(p,primaryStat(p)))}
+</p>
+<strong>${trend(p,primaryStat(p))}</strong>
 </div>`).join("")}</div></section>`;
 }
 }
@@ -814,29 +940,39 @@ ${["All",g.away,g.home].map(t=>
 `<button data-team="${esc(t)}" aria-pressed="${t===team}">${esc(t)}</button>`
 ).join("")}
 </div>
-
 ${teamCards(g)}
-
 ${team==="All"
 ?`<div class="matchup-columns">
 ${[[g.away_id,g.away],[g.home_id,g.home]].map(([id,abbreviation])=>
 `<section class="team-column"
 aria-label="${esc(abbreviation)} team stats and players">
 ${data.players.filter(p=>
-p.team_id===id&&matches(p)&&eligible(p,g.id)
+p.team_id===id&&matches(p)&&eligible(p,g.id)&&
+(sport==="nba"||playerCats(p).length>0)
 ).sort((a,b)=>playerOrder(a,b,g.id)).map(playerCard).join("")}
 </section>`).join("")}
 </div>`
 :data.players.filter(p=>
 [g.home_id,g.away_id].includes(p.team_id)&&
-teamCode(p.team)===teamCode(team)&&matches(p)&&eligible(p,g.id)
+teamCode(p.team)===teamCode(team)&&matches(p)&&eligible(p,g.id)&&
+(sport==="nba"||playerCats(p).length>0)
 ).sort((a,b)=>playerOrder(a,b,g.id)).map(playerCard).join("")}`;
 }
 }
 
+if(sport==="nfl"){
+html=html.replace(
+"No games are saved for today.",
+"No games are saved for this week."
+);
+}
 q("#content").innerHTML=html;
 renderFavorites();
-if(open!==undefined)activePlayer=Number(open);
+if(sport==="nfl"){
+q("#favorites").innerHTML=q("#favorites").innerHTML
+.replace(/Today/g,"This week").replace(/today's/g,"this week's");
+}
+if(open!==undefined)activePlayer=toId(open);
 renderPlayerPopup();
 }
 
@@ -846,20 +982,29 @@ if(!button)return;
 const action=button.dataset;
 const open=button.closest("[data-player]")?.dataset.player;
 
+if(action.sport){
+if(action.sport!==sport){
+const url=new URL(location.href);
+url.searchParams.set("sport",action.sport);
+location.assign(url.href);
+}
+return;
+}
+
 if("closePlayer" in action){
 q("#player-dialog").close();
 return;
 }
 
 if(action.playerOpen!==undefined){
-activePlayer=Number(action.playerOpen);
+activePlayer=toId(action.playerOpen);
 renderPlayerPopup();
 return;
 }
 
 if(action.favoriteTeam!==undefined){
 event.preventDefault();
-const id=Number(action.favoriteTeam);
+const id=toId(action.favoriteTeam);
 const index=favoriteTeams.indexOf(id);
 if(index<0)favoriteTeams.push(id);
 else favoriteTeams.splice(index,1);
@@ -870,7 +1015,7 @@ return;
 
 if(action.favoriteTeamOpen!==undefined){
 const matchup=data.games.find(g=>String(g.id)===action.match);
-const id=Number(action.favoriteTeamOpen);
+const id=toId(action.favoriteTeamOpen);
 if(!matchup||![matchup.home_id,matchup.away_id].includes(id))return;
 game=String(matchup.id);
 team=id===matchup.home_id?matchup.home:matchup.away;
@@ -885,7 +1030,7 @@ return;
 
 if(action.favorite!==undefined){
 event.preventDefault();
-const id=Number(action.favorite);
+const id=toId(action.favorite);
 const index=favorites.indexOf(id);
 if(index<0)favorites.push(id);
 else favorites.splice(index,1);
@@ -907,7 +1052,7 @@ return;
 
 if(action.box){
 const [id,gameId]=action.box.split(":");
-const player=data.players.find(p=>p.id===Number(id));
+const player=data.players.find(p=>p.id===toId(id));
 const log=player&&[
 ...player.logs,...(player.h2h_logs||[])
 ].find(log=>String(log.id)===gameId);
@@ -950,10 +1095,10 @@ venue=action.venue;
 render(open);
 }else if(action.pick){
 const [id,side]=action.pick.split(":");
-const player=data.players.find(p=>p.id===Number(id));
+const player=data.players.find(p=>p.id===toId(id));
 if(!player)return;
 const existing=picks.findIndex(p=>
-p.id===Number(id)&&p.stat===stat&&p.side===side);
+p.id===toId(id)&&p.stat===stat&&p.side===side);
 if(existing<0){
 picks.push({
 id:player.id,name:player.name,team:player.team,
@@ -992,10 +1137,21 @@ render();
 
 async function load(){
 try{
-const response=await fetch("/api/dashboard",{cache:"no-store"});
+const response=await fetch(
+sport==="nfl"?"/api/nfl/dashboard":"/api/dashboard",
+{cache:"no-store"}
+);
 const result=await response.json();
 if(!response.ok)throw Error(result.error);
 data=result;
+q("#games-title").textContent=sport==="nfl"
+?`NFL · Week ${result.week??"—"}`:"Today's Games";
+q("#favorites").setAttribute(
+"aria-label",
+sport==="nfl"
+?"Favorite players and teams scheduled this week"
+:"Favorite players and teams scheduled today"
+);
 q("#status").textContent=
 `${result.date} · ${result.season} · Saved game statistics`+
 (result.updated_at
@@ -1003,12 +1159,13 @@ q("#status").textContent=
 render();
 }catch(error){
 q("#status").textContent=navigator.onLine
-?"Saved NBA data could not load. Reload to try again."
-:"Offline · Reconnect to load current NBA stats.";
+?`Saved ${sport.toUpperCase()} data could not load. Reload to try again.`
+:`Offline · Reconnect to load current ${sport.toUpperCase()} stats.`;
 render();
 }
 }
 
+q("#status").textContent=`Loading saved ${sport.toUpperCase()} data…`;
 render();
 load();
 if("serviceWorker" in navigator){
