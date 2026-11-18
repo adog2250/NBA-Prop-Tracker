@@ -1,4 +1,4 @@
-"""ZenStats: player history, availability, team stats, and PWA."""
+"""ZenStats: NBA and NFL data, availability, team stats, and PWA."""
 
 import json
 import logging
@@ -629,7 +629,10 @@ def app(environ, start_response):
                 "teams_in_database": total,
             })
 
-        if path == "/api/dashboard":
+        if path in {
+            "/api/dashboard",
+            "/api/nfl/dashboard",
+        }:
             value = parse_qs(
                 environ.get("QUERY_STRING", "")
             ).get("date", [None])[0]
@@ -650,9 +653,15 @@ def app(environ, start_response):
                     "400 Bad Request",
                 )
 
+            if path == "/api/nfl/dashboard":
+                from nfl_api import nfl_dashboard
+                result = nfl_dashboard(day)
+            else:
+                result = dashboard(day)
+
             return respond(
                 start_response,
-                dashboard(day),
+                result,
             )
 
     except Exception:
@@ -662,7 +671,7 @@ def app(environ, start_response):
             start_response,
             {
                 "error":
-                    "Saved NBA data is temporarily unavailable. "
+                    "Saved sports data is temporarily unavailable. "
                     "Try again shortly."
             },
             "503 Service Unavailable",
