@@ -244,6 +244,7 @@ REC_YDS:"Rec yards",
 REC:"Receptions",
 TGTS:"Targets",
 REC_TD:"Rec TD",
+TOUCHDOWNS:"Touchdowns",
 FGM:"FG made",
 FGA:"FG attempts",
 XPM:"XP made",
@@ -327,7 +328,8 @@ PR:["PTS","REB"],
 PA:["PTS","AST"],
 RA:["REB","AST"],
 PRA:["PTS","REB","AST"],
-PASS_RUSH_YDS:["PASS_YDS","RUSH_YDS"]
+PASS_RUSH_YDS:["PASS_YDS","RUSH_YDS"],
+TOUCHDOWNS:["RUSH_TD","REC_TD"]
 };
 const fields=combinations[key]||[key];
 return fields.every(f=>typeof log[f]==="number"&&Number.isFinite(log[f]))
@@ -548,10 +550,10 @@ const position=String(player.position||"").trim().toUpperCase();
 
 const groups={
 QB:["PASS_YDS","RUSH_YDS","PASS_RUSH_YDS","PASS_CMP"],
-RB:["RUSH_YDS","RUSH_ATT","RUSH_TD","REC_YDS","REC","TGTS","REC_TD"],
+RB:["RUSH_YDS","RUSH_ATT","REC_YDS","REC","TGTS","TOUCHDOWNS"],
 FB:["RUSH_YDS","RUSH_ATT","REC_YDS","REC","TGTS"],
-WR:["REC_YDS","REC","TGTS","REC_TD"],
-TE:["REC_YDS","REC","TGTS","REC_TD"],
+WR:["REC_YDS","REC","TGTS","TOUCHDOWNS"],
+TE:["REC_YDS","REC","TGTS","TOUCHDOWNS"],
 K:["FGM","FGA","XPM","XPA"],
 PK:["FGM","FGA","XPM","XPA"]
 };
@@ -563,7 +565,7 @@ if(
 player.logs.some(log=>
 Number.isFinite(log.RUSH_ATT)&&log.RUSH_ATT>0)
 ){
-keys.push("RUSH_YDS","RUSH_ATT","RUSH_TD");
+keys.push("RUSH_YDS","RUSH_ATT");
 }
 
 return keys.filter(key=>
