@@ -33,7 +33,6 @@ def collect_games(season):
     games = {}
 
     for month in season_months(season):
-        # ESPN accepts YYYYMM. Avoid the rejected date-range format.
         payload = fetch(
             f"{BASE}/scoreboard?dates={month}&limit=1000"
         )
@@ -165,7 +164,6 @@ def main():
         os.environ.get("NFL_SEASON") or current_season()
     )
 
-    # Finish downloading and validating before changing the database.
     rows = collect_games(season)
 
     with psycopg.connect(
