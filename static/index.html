@@ -815,11 +815,11 @@ const rows=sport==="nfl"
 ["3-pointers per game","threes_made","threes_allowed",false],
 ["FG%","fg_pct","fg_pct_allowed",true],
 ["3PT%","three_pct","three_pct_allowed",true],
-["FT%","ft_pct","ft_pct_allowed",true],
+["FT%","ft_pct",null,true],
 ["Turnovers per game","turnovers","turnovers_forced",false]
 ];
 
-const cell=(t,key,isPercent,attemptKey)=>{
+const cell=(t,key,isPercent,attemptKey,colspan=1)=>{
 const value=attemptKey
 ?number(t?.[key])+" / "+number(t?.[attemptKey])
 :(isPercent?percent:number)(t?.[key]);
@@ -827,7 +827,8 @@ const count=t?.metric_games?.[key];
 const coverage=Number.isInteger(count)&&t
 ?`${count}/${t.games} saved final games`
 :"Available saved final games";
-return `<td aria-label="${esc(coverage)}: ${esc(value)}">${value}</td>`;
+return `<td colspan="${colspan}"
+aria-label="${esc(coverage)}: ${esc(value)}">${value}</td>`;
 };
 
 return `<section class="team-comparison-panel"
@@ -869,7 +870,9 @@ ${rows.map(([label,own,allowed,isPercent,ownAttempts,allowedAttempts])=>`
 <th scope="row">${label}</th>
 ${shown.map(([id])=>{
 const t=data.team_stats?.[String(id)];
-return cell(t,own,isPercent,ownAttempts)+
+return allowed===null
+?cell(t,own,isPercent,undefined,2)
+:cell(t,own,isPercent,ownAttempts)+
 cell(t,allowed,isPercent,allowedAttempts);
 }).join("")}
 </tr>`).join("")}
