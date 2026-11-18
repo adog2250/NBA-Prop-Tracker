@@ -802,7 +802,12 @@ const shown=[
 (team==="All"||teamCode(team)===teamCode(abbreviation)));
 
 const rows=sport==="nfl"
-?[["Points per game","points","points_allowed",false]]
+?[
+["Points per game","points","points_allowed",false],
+["Rush yards per game","rushing_yards","rushing_yards_allowed",false],
+["Receiving yards per game","receiving_yards","receiving_yards_allowed",false],
+["FG made/attempts","field_goals_made","field_goals_allowed",false,"field_goals_attempted","field_goal_attempts_allowed"]
+]
 :[
 ["Points per game","points","points_allowed",false],
 ["Assists per game","assists","assists_allowed",false],
@@ -814,8 +819,10 @@ const rows=sport==="nfl"
 ["Turnovers per game","turnovers","turnovers_forced",false]
 ];
 
-const cell=(t,key,isPercent)=>{
-const value=(isPercent?percent:number)(t?.[key]);
+const cell=(t,key,isPercent,attemptKey)=>{
+const value=attemptKey
+?number(t?.[key])+" / "+number(t?.[attemptKey])
+:(isPercent?percent:number)(t?.[key]);
 const count=t?.metric_games?.[key];
 const coverage=Number.isInteger(count)&&t
 ?`${count}/${t.games} saved final games`
@@ -857,12 +864,13 @@ ${shown.map(()=>
 </tr>
 </thead>
 <tbody>
-${rows.map(([label,own,allowed,isPercent])=>`
+${rows.map(([label,own,allowed,isPercent,ownAttempts,allowedAttempts])=>`
 <tr>
 <th scope="row">${label}</th>
 ${shown.map(([id])=>{
 const t=data.team_stats?.[String(id)];
-return cell(t,own,isPercent)+cell(t,allowed,isPercent);
+return cell(t,own,isPercent,ownAttempts)+
+cell(t,allowed,isPercent,allowedAttempts);
 }).join("")}
 </tr>`).join("")}
 </tbody>
