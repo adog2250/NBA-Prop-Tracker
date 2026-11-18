@@ -15,11 +15,12 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       PYTHONUNBUFFERED: "1"
+      NFL_STATS_BATCH: "30"
 
     steps:
       - name: Check out repository
@@ -38,3 +39,9 @@ jobs:
 
       - name: Refresh NFL games
         run: python collector/sync_nfl_games.py
+
+      - name: Refresh NFL injuries and roster eligibility
+        run: python collector/sync_nfl_availability.py
+
+      - name: Import completed NFL player box scores
+        run: python collector/sync_nfl_stats.py
