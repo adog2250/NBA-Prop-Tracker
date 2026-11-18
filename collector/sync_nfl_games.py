@@ -1,4 +1,4 @@
-"""Load NFL schedules using ESPN monthly date requests."""
+"""Load NFL schedules, skipping games with undecided teams."""
 
 import os
 from datetime import datetime
@@ -17,7 +17,6 @@ def current_season():
 def score_value(value):
     if value is None or value == "":
         return None
-
     return int(value)
 
 
@@ -29,8 +28,20 @@ def season_months(season):
         yield f"{season + 1}{month:02d}"
 
 
+def real_team_id(competitor):
+    value = str(
+        (competitor.get("team") or {}).get("id") or ""
+    )
+
+    if not value.isdigit() or int(value) <= 0:
+        return None
+
+    return value
+
+
 def collect_games(season):
     games = {}
+    undecided = set()
 
     for month in season_months(season):
         payload = fetch(
@@ -57,11 +68,12 @@ def collect_games(season):
             if season_type not in (1, 2, 3):
                 continue
 
+            game_id = str(event["id"])
             competitions = event.get("competitions") or []
 
             if len(competitions) != 1:
                 raise ValueError(
-                    f"Unexpected competition data: {event.get('id')}"
+                    f"Unexpected competition data: {game_id}"
                 )
 
             competition = competitions[0]
@@ -83,24 +95,6 @@ def collect_games(season):
                 None,
             )
 
-            if home is None or away is None:
-                raise ValueError(
-                    f"Missing home/away teams: {event.get('id')}"
-                )
-
-            game_id = str(event["id"])
-            home_id = str(home["team"]["id"])
-            away_id = str(away["team"]["id"])
-
-            if home_id == away_id:
-                raise ValueError(
-                    f"Identical home/away teams: {game_id}"
-                )
-
-            starts_at = datetime.fromisoformat(
-                event["date"].replace("Z", "+00:00")
-            )
-
             status_info = (
                 event.get("status")
                 or competition.get("status")
@@ -115,6 +109,27 @@ def collect_games(season):
                 status = (
                     status_info.get("name") or "scheduled"
                 ).lower().removeprefix("status_")
+
+            home_id = real_team_id(home or {})
+            away_id = real_team_id(away or {})
+
+            if home_id is None or away_id is None:
+                if status in {"final", "in_progress"}:
+                    raise ValueError(
+                        f"Started game {game_id} has invalid teams"
+                    )
+
+                undecided.add(game_id)
+                continue
+
+            if home_id == away_id:
+                raise ValueError(
+                    f"Identical home/away teams: {game_id}"
+                )
+
+            starts_at = datetime.fromisoformat(
+                event["date"].replace("Z", "+00:00")
+            )
 
             home_score = None
             away_score = None
@@ -146,15 +161,20 @@ def collect_games(season):
             imported += 1
 
         print(
-            f"{month}: {imported} season games checked",
+            f"{month}: {imported} games with known teams checked",
             flush=True,
         )
 
     if not games:
         raise ValueError(
-            f"No games returned for season {season}. "
+            f"No games with known teams returned for {season}. "
             "Existing data was left unchanged."
         )
+
+    print(
+        f"Future games with undecided teams skipped: {len(undecided)}",
+        flush=True,
+    )
 
     return list(games.values())
 
@@ -163,7 +183,6 @@ def main():
     season = int(
         os.environ.get("NFL_SEASON") or current_season()
     )
-
     rows = collect_games(season)
 
     with psycopg.connect(
@@ -184,7 +203,7 @@ def main():
 
             if missing_teams:
                 raise RuntimeError(
-                    "Run the NFL roster collector first. "
+                    "NFL team records are missing. "
                     f"Missing team IDs: {sorted(missing_teams)}"
                 )
 
