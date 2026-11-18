@@ -1,4 +1,4 @@
-"""NFL dashboard data for ZenStats."""
+"""NFL dashboard data and team comparisons for ZenStats."""
 
 import os
 from datetime import datetime, time, timedelta
@@ -45,15 +45,8 @@ BLOCKED = {
 
 def make_log(row):
     (
-        pid,
-        gid,
-        starts,
-        tid,
-        hid,
-        home,
-        away,
-        season,
-        raw,
+        pid, gid, starts, tid, hid,
+        home, away, season, raw,
     ) = row
 
     is_home = str(tid) == str(hid)
@@ -72,20 +65,49 @@ def make_log(row):
 
     for key, field in STAT_FIELDS.items():
         value = (raw or {}).get(field)
-
-        log[key] = (
-            float(value)
-            if value is not None
-            else None
-        )
+        log[key] = float(value) if value is not None else None
 
     return log
 
 
 def summarize_teams(rows):
+    averages = (
+        ("rushing_yards", "own", "rushing_yards"),
+        (
+            "rushing_yards_allowed",
+            "opponent",
+            "rushing_yards",
+        ),
+        ("receiving_yards", "own", "receiving_yards"),
+        (
+            "receiving_yards_allowed",
+            "opponent",
+            "receiving_yards",
+        ),
+        ("field_goals_made", "own", "field_goals_made"),
+        (
+            "field_goals_allowed",
+            "opponent",
+            "field_goals_made",
+        ),
+        (
+            "field_goals_attempted",
+            "own",
+            "field_goals_attempted",
+        ),
+        (
+            "field_goal_attempts_allowed",
+            "opponent",
+            "field_goals_attempted",
+        ),
+    )
+
     teams = {}
 
-    for tid, name, abbreviation, scored, allowed in rows:
+    for (
+        tid, name, abbreviation,
+        scored, allowed, own, opponent,
+    ) in rows:
         if scored is None or allowed is None:
             continue
 
@@ -101,6 +123,10 @@ def summarize_teams(rows):
             "ties": 0,
             "points": 0.0,
             "points_allowed": 0.0,
+            "_values": {
+                key: []
+                for key, _, _ in averages
+            },
         })
 
         item["games"] += 1
@@ -114,9 +140,34 @@ def summarize_teams(rows):
         else:
             item["ties"] += 1
 
+        sources = {
+            "own": own or {},
+            "opponent": opponent or {},
+        }
+
+        for key, side, field in averages:
+            value = sources[side].get(field)
+
+            if value is not None:
+                item["_values"][key].append(float(value))
+
     for item in teams.values():
         item["points"] /= item["games"]
         item["points_allowed"] /= item["games"]
+
+        item["metric_games"] = {
+            "points": item["games"],
+            "points_allowed": item["games"],
+        }
+
+        for key, values in item.pop("_values").items():
+            item[key] = (
+                sum(values) / len(values)
+                if values
+                else None
+            )
+
+            item["metric_games"][key] = len(values)
 
     return teams
 
@@ -125,11 +176,7 @@ def nfl_dashboard(day):
     season = day.year if day.month >= 8 else day.year - 1
     zone = ZoneInfo("America/Chicago")
 
-    start = datetime.combine(
-        day,
-        time.min,
-        zone,
-    )
+    start = datetime.combine(day, time.min, zone)
 
     end = datetime.combine(
         day + timedelta(days=1),
@@ -210,23 +257,15 @@ def nfl_dashboard(day):
         games = [
             dict(zip(
                 (
-                    "id",
-                    "home_id",
-                    "home",
-                    "away_id",
-                    "away",
-                    "status",
-                    "starts_at",
-                    "home_score",
-                    "away_score",
+                    "id", "home_id", "home",
+                    "away_id", "away", "status",
+                    "starts_at", "home_score", "away_score",
                 ),
                 row,
             ))
             for row in cur.fetchall()
         ]
 
-        # Display only quarterbacks, running backs,
-        # wide receivers, tight ends, and placekickers.
         cur.execute(
             """
             SELECT
@@ -325,11 +364,34 @@ def nfl_dashboard(day):
             ):
                 updated = row[9]
 
+        # Sum player box scores by historical game team.
+        # This includes players who have since changed teams.
+        # Missing values remain NULL instead of becoming zero.
         cur.execute(
             """
-            WITH sides AS (
+            WITH boxes AS (
                 SELECT
+                    s.game_id,
+                    s.team_id,
+                    SUM(s.rushing_yards) AS rushing_yards,
+                    SUM(s.receiving_yards) AS receiving_yards,
+                    SUM(s.field_goals_made) AS field_goals_made,
+                    SUM(s.field_goals_attempted)
+                        AS field_goals_attempted
+                FROM public.nfl_player_game_stats s
+                JOIN public.nfl_games g
+                  ON g.id = s.game_id
+                WHERE g.season = %s
+                  AND g.season_type = 2
+                  AND g.status = 'final'
+                  AND g.starts_at < %s
+                GROUP BY s.game_id, s.team_id
+            ),
+            sides AS (
+                SELECT
+                    id,
                     home_team_id AS team_id,
+                    away_team_id AS opponent_id,
                     home_score AS scored,
                     away_score AS allowed
                 FROM public.nfl_games
@@ -341,7 +403,9 @@ def nfl_dashboard(day):
                 UNION ALL
 
                 SELECT
+                    id,
                     away_team_id,
+                    home_team_id,
                     away_score,
                     home_score
                 FROM public.nfl_games
@@ -355,12 +419,20 @@ def nfl_dashboard(day):
                 t.name,
                 t.abbreviation,
                 x.scored,
-                x.allowed
+                x.allowed,
+                to_jsonb(b),
+                to_jsonb(o)
             FROM sides x
             JOIN public.nfl_teams t
               ON t.id = x.team_id
+            LEFT JOIN boxes b
+              ON b.game_id = x.id
+             AND b.team_id = x.team_id
+            LEFT JOIN boxes o
+              ON o.game_id = x.id
+             AND o.team_id = x.opponent_id
             """,
-            (season, end, season, end),
+            (season, end, season, end, season, end),
         )
 
         teams = summarize_teams(cur.fetchall())
@@ -385,17 +457,9 @@ def nfl_dashboard(day):
             )
 
             for (
-                gid,
-                pid,
-                tid,
-                injury,
-                description,
-                roster,
-                starter,
-                source,
-                stamp,
+                gid, pid, tid, injury, description,
+                roster, starter, source, stamp,
             ) in cur.fetchall():
-
                 player = players.get(str(pid))
 
                 if (
