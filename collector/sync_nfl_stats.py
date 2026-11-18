@@ -1,6 +1,7 @@
-"""Import completed NFL player box scores without changing NBA data."""
+"""Import NFL box scores, including verified zero-stat appearances."""
 
 import os
+import re
 from decimal import Decimal, InvalidOperation
 
 import psycopg
@@ -137,18 +138,15 @@ def parse_stats(payload, game_id, expected_teams):
 
     teams = (payload.get("boxscore") or {}).get("players")
 
-    if not isinstance(teams, list):
-        raise ValueError("Missing player box scores")
+    if not isinstance(teams, list) or len(teams) != 2:
+        raise ValueError("Missing two-team player box scores")
 
-    received_teams = [
+    received_teams = {
         str((team.get("team") or {}).get("id"))
         for team in teams
-    ]
+    }
 
-    if (
-        len(received_teams) != 2
-        or set(received_teams) != set(expected_teams)
-    ):
+    if received_teams != set(expected_teams):
         raise ValueError(
             "Box score teams do not match saved game"
         )
@@ -157,15 +155,25 @@ def parse_stats(payload, game_id, expected_teams):
 
     for team in teams:
         team_id = str(team["team"]["id"])
-        team_count = 0
+        categories = {}
+        played = set()
+        dnp = set()
 
         for category in team.get("statistics") or []:
             category_name = category.get("name")
 
-            if (
-                category_name not in MAPS
-                and category_name not in PAIRS
-            ):
+            supported = (
+                category_name in MAPS
+                or category_name in PAIRS
+            )
+
+            participation_only = category_name in {
+                "kickReturns",
+                "puntReturns",
+                "punting",
+            }
+
+            if not supported and not participation_only:
                 continue
 
             keys = category.get("keys")
@@ -177,55 +185,65 @@ def parse_stats(payload, game_id, expected_teams):
             ):
                 raise ValueError("Malformed stat category")
 
+            mapping = MAPS.get(category_name, {})
+            pairs = PAIRS.get(category_name, {})
+
+            required = set(mapping) | set(pairs)
+            complete = required.issubset(keys)
+            present = set()
+            fields = set(mapping.values())
+
+            for pair in pairs.values():
+                fields.update(pair)
+
             for entry in athletes:
                 athlete = entry.get("athlete") or {}
-                player_id = str(athlete.get("id") or "")
-                name = athlete.get("displayName")
-                values = entry.get("stats")
+                pid = str(athlete.get("id") or "")
+
+                if not pid.isdigit():
+                    raise ValueError("Missing player ID")
 
                 if (
-                    not player_id.isdigit()
-                    or not name
+                    entry.get("didNotPlay") is True
+                    or athlete.get("didNotPlay") is True
+                ):
+                    dnp.add(pid)
+                    continue
+
+                values = entry.get("stats")
+                player_name = athlete.get("displayName")
+
+                if (
+                    not player_name
                     or not isinstance(values, list)
                     or len(keys) != len(values)
                 ):
                     raise ValueError("Malformed player stat row")
 
-                if player_id in players:
-                    if players[player_id]["team_id"] != team_id:
-                        raise ValueError(
-                            "Player appears on both teams"
-                        )
-                else:
-                    players[player_id] = {
-                        "id": player_id,
-                        "name": name,
-                        "team_id": team_id,
-                        "headshot": (
-                            athlete.get("headshot") or {}
-                        ).get("href"),
-                        "stats": {},
-                    }
-
-                saved = players[player_id]["stats"]
                 source = dict(zip(keys, values))
+                parsed = {}
 
-                for source_key, field in MAPS.get(
-                    category_name, {}
-                ).items():
-                    if source_key in source:
-                        saved[field] = numeric(
-                            source[source_key], field
-                        )
+                for source_key, field in mapping.items():
+                    parsed[field] = numeric(
+                        source.get(source_key),
+                        field,
+                    )
 
-                for source_key, fields in PAIRS.get(
-                    category_name, {}
-                ).items():
+                    if parsed[field] is None:
+                        complete = False
+
+                for source_key, pair in pairs.items():
                     raw = source.get(source_key)
 
                     if raw is None or str(raw).strip() in {
                         "", "-", "--", "—", "N/A"
                     }:
+                        parsed.update({
+                            field: None
+                            for field in pair
+                        })
+
+                        complete = False
                         continue
 
                     parts = str(raw).split("/")
@@ -235,8 +253,8 @@ def parse_stats(payload, game_id, expected_teams):
                             f"Invalid paired stat: {raw}"
                         )
 
-                    first = numeric(parts[0], fields[0])
-                    second = numeric(parts[1], fields[1])
+                    first = numeric(parts[0], pair[0])
+                    second = numeric(parts[1], pair[1])
 
                     if (
                         first is None
@@ -248,15 +266,89 @@ def parse_stats(payload, game_id, expected_teams):
                             f"Invalid paired stat: {raw}"
                         )
 
-                    saved[fields[0]] = first
-                    saved[fields[1]] = second
+                    parsed[pair[0]] = first
+                    parsed[pair[1]] = second
 
-                team_count += 1
+                if supported:
+                    appeared = any(
+                        value is not None
+                        for value in parsed.values()
+                    )
+                else:
+                    # A recorded return or punting line can
+                    # establish a player appearance.
+                    appeared = any(
+                        re.fullmatch(
+                            r"-?\d+(?:\.\d+)?",
+                            str(value).strip(),
+                        )
+                        for value in values
+                    )
 
-        if team_count == 0:
+                if not appeared:
+                    continue
+
+                if (
+                    pid in players
+                    and players[pid]["team_id"] != team_id
+                ):
+                    raise ValueError(
+                        "Player appears on both teams"
+                    )
+
+                player = players.setdefault(pid, {
+                    "id": pid,
+                    "name": player_name,
+                    "team_id": team_id,
+                    "headshot": (
+                        athlete.get("headshot") or {}
+                    ).get("href"),
+                    "stats": {},
+                })
+
+                player["stats"].update(parsed)
+                played.add(pid)
+                present.add(pid)
+
+            if supported:
+                if category_name in categories:
+                    raise ValueError(
+                        f"Duplicate stat category: {category_name}"
+                    )
+
+                categories[category_name] = (
+                    fields,
+                    present,
+                    complete,
+                )
+
+        played -= dnp
+
+        if not played:
             raise ValueError(
-                f"No supported stats for team {team_id}"
+                f"No verified player appearances "
+                f"for team {team_id}"
             )
+
+        for pid in played:
+            for fields, present, complete in categories.values():
+                # A player with a verified appearance who is
+                # absent from a complete stat category had no
+                # recorded events in that category.
+                #
+                # Example: a receiver with catches but no
+                # rushing entry receives zero rushing stats.
+                #
+                # Explicit unavailable cells and entirely
+                # missing categories are not converted to zero.
+                if complete and pid not in present:
+                    for field in fields:
+                        players[pid]["stats"].setdefault(
+                            field, 0
+                        )
+
+        for pid in dnp:
+            players.pop(pid, None)
 
     return [
         player
@@ -277,7 +369,6 @@ def save_game(game_id, players):
         for field in FIELDS
     )
 
-    # Column names come only from the fixed FIELDS constant.
     query = f"""
         INSERT INTO public.nfl_player_game_stats (
             game_id, player_id, team_id, {columns}
@@ -295,7 +386,7 @@ def save_game(game_id, players):
         sslmode="require",
     ) as connection:
         with connection.cursor() as cursor:
-            # Historical games must not overwrite current teams
+            # Historical games do not change current teams
             # or reactivate players who left a roster.
             cursor.executemany(
                 """
@@ -427,6 +518,7 @@ def main():
 
         except Exception as exc:
             failed.append(str(game_id))
+
             print(
                 f"{game_id}: FAILED — {exc}",
                 flush=True,
