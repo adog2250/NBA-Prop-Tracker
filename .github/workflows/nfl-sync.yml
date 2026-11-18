@@ -43,5 +43,8 @@ jobs:
       - name: Refresh NFL injuries and roster eligibility
         run: python collector/sync_nfl_availability.py
 
+      - name: Refresh projected NFL starters
+        run: python collector/sync_nfl_starters.py
+
       - name: Import completed NFL player box scores
         run: python collector/sync_nfl_stats.py
