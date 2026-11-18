@@ -1,4 +1,4 @@
-"""NFL dashboard data for ZenStats. NBA tables are never modified."""
+"""NFL dashboard data for ZenStats."""
 
 import os
 from datetime import datetime, time, timedelta
@@ -123,7 +123,6 @@ def summarize_teams(rows):
 
 def nfl_dashboard(day):
     season = day.year if day.month >= 8 else day.year - 1
-
     zone = ZoneInfo("America/Chicago")
 
     start = datetime.combine(
@@ -147,7 +146,6 @@ def nfl_dashboard(day):
         sslmode="require",
     ) as conn, conn.cursor() as cur:
 
-        # Show the full NFL week, including Thursday and Monday.
         cur.execute(
             """
             SELECT week
@@ -227,6 +225,8 @@ def nfl_dashboard(day):
             for row in cur.fetchall()
         ]
 
+        # Display only quarterbacks, running backs,
+        # wide receivers, tight ends, and placekickers.
         cur.execute(
             """
             SELECT
@@ -242,6 +242,8 @@ def nfl_dashboard(day):
             JOIN public.nfl_teams t
               ON t.id = p.current_team_id
             WHERE p.is_active = TRUE
+              AND UPPER(TRIM(COALESCE(p.position, '')))
+                  IN ('QB', 'RB', 'WR', 'TE', 'K', 'PK')
             ORDER BY p.name
             """
         )
@@ -286,6 +288,8 @@ def nfl_dashboard(day):
             JOIN public.nfl_teams at
               ON at.id = g.away_team_id
             WHERE p.is_active = TRUE
+              AND UPPER(TRIM(COALESCE(p.position, '')))
+                  IN ('QB', 'RB', 'WR', 'TE', 'K', 'PK')
               AND g.season IN (%s, %s)
               AND g.season_type = 2
               AND g.status = 'final'
