@@ -161,8 +161,8 @@ input{font-size:16px}
 .box-hit,.player-action-overlay{min-height:0}
 .player-favorite-star{min-height:24px;min-width:28px}
 .player-favorite-star::after{content:"";position:absolute;top:-10px;bottom:-10px;left:-8px;right:-8px}
-button[data-stat],button[data-window],button[data-venue],button[data-team],button[data-minutes],button[data-close-player],button[data-pick],#nav button{position:relative}
-button[data-stat]::after,button[data-window]::after,button[data-venue]::after,button[data-team]::after,button[data-minutes]::after,button[data-close-player]::after,button[data-pick]::after,#nav button::after{content:"";position:absolute;inset:-2px}
+button[data-bench-position],button[data-stat],button[data-window],button[data-venue],button[data-team],button[data-minutes],button[data-close-player],button[data-pick],#nav button{position:relative}
+button[data-bench-position]::after,button[data-stat]::after,button[data-window]::after,button[data-venue]::after,button[data-team]::after,button[data-minutes]::after,button[data-close-player]::after,button[data-pick]::after,#nav button::after{content:"";position:absolute;inset:-2px}
 }
 .team-comparison-panel{margin:6px 0 8px;padding:6px;background:#1d283b;border:1px solid #3c4b63;border-radius:10px}
 .team-comparison{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px}
@@ -267,6 +267,7 @@ let data={players:[],games:[],team_stats:{}};
 let game="all",team="All",stat=sport==="nfl"?"PASS_YDS":"PTS",n=5,venue="All";
 let minutes=false,search="",myPicks=false;
 let activePlayer=null;
+const benchTabs={};
 let picks=[],favorites=[],favoriteTeams=[];
 
 const storageKey=sport==="nfl"?"zenstats-nfl-picks-v1":"nba-prop-tracker-picks-v1";
@@ -449,9 +450,7 @@ return 2;
 
 function playerOrder(a,b,gameId=game){
 if(sport==="nfl"){
-const positions={
-QB:0,RB:1,FB:1,WR:2,TE:3,K:4,PK:4
-};
+const positions={QB:0,RB:1,FB:1,WR:2,TE:3,K:4,PK:4};
 const positionRank=player=>
 positions[String(player.position||"").trim().toUpperCase()]??99;
 const groupRank=player=>starterRank(player,gameId)<2?0:1;
@@ -461,7 +460,6 @@ positionRank(a)-positionRank(b)||
 starterRank(a,gameId)-starterRank(b,gameId)||
 a.name.localeCompare(b.name);
 }
-
 return starterRank(a,gameId)-starterRank(b,gameId)||
 a.name.localeCompare(b.name);
 }
@@ -931,6 +929,31 @@ ${selected(player.id,side)?"✓ ":""}${side}</button>`).join("")}
 </div></section>`;
 }
 
+function benchPosition(player){
+const value=String(player.position||"").trim().toUpperCase();
+
+if(sport==="nfl"){
+return ({PK:"K",FB:"RB"})[value]||value||"Other";
+}
+
+const match=/\b(PG|SG|SF|PF|C|G|F)\b/.exec(value);
+
+if(match)return match[1];
+
+const names={
+"POINT GUARD":"PG",
+"SHOOTING GUARD":"SG",
+"SMALL FORWARD":"SF",
+"POWER FORWARD":"PF",
+"CENTER":"C",
+"GUARD":"G",
+"FORWARD":"F"
+};
+
+return Object.keys(names).find(name=>value===name)
+?names[value]:"Other";
+}
+
 function teamPlayers(teamId,gameId){
 const players=data.players.filter(player=>
 player.team_id===teamId&&
@@ -938,10 +961,6 @@ matches(player)&&
 eligible(player,gameId)&&
 (sport==="nba"||playerCats(player).length>0)
 ).sort((a,b)=>playerOrder(a,b,gameId));
-
-if(sport==="nba"){
-return players.map(playerCard).join("");
-}
 
 const starters=players.filter(
 player=>starterRank(player,gameId)<2
@@ -951,15 +970,55 @@ const bench=players.filter(
 player=>starterRank(player,gameId)>=2
 );
 
-return (
-starters.length
+let html=starters.length
 ?`<h3>Starters</h3>${starters.map(playerCard).join("")}`
-:""
-)+(
-bench.length
-?`<h3>Bench</h3>${bench.map(playerCard).join("")}`
-:""
-);
+:"";
+
+if(!bench.length)return html;
+
+const groups=new Map();
+
+for(const player of bench){
+const position=benchPosition(player);
+
+if(!groups.has(position)){
+groups.set(position,[]);
+}
+
+groups.get(position).push(player);
+}
+
+const order=sport==="nfl"
+?["QB","RB","WR","TE","K","Other"]
+:["PG","SG","SF","PF","C","G","F","Other"];
+
+const positions=[...groups.keys()].sort((a,b)=>{
+const aRank=order.includes(a)?order.indexOf(a):order.length;
+const bRank=order.includes(b)?order.indexOf(b):order.length;
+return aRank-bRank||a.localeCompare(b);
+});
+
+const key=`${gameId}:${teamId}`;
+
+const selected=groups.has(benchTabs[key])
+?benchTabs[key]:positions[0];
+
+benchTabs[key]=selected;
+
+html+=`<h3>Bench</h3>
+<div class="row" role="group" aria-label="Bench positions">
+${positions.map(position=>`
+<button type="button"
+data-bench-position="${esc(position)}"
+data-bench-team="${esc(teamId)}"
+data-bench-game="${esc(gameId)}"
+aria-pressed="${position===selected}">
+${esc(position)}
+</button>`).join("")}
+</div>
+${groups.get(selected).map(playerCard).join("")}`;
+
+return html;
 }
 
 function playerCard(player){
@@ -1178,16 +1237,10 @@ aria-label="${esc(abbreviation)} team stats and players">
 ${teamPlayers(id,g.id)}
 </section>`).join("")}
 </div>`
-:sport==="nfl"
-?teamPlayers(
+:teamPlayers(
 teamCode(team)===teamCode(g.home)?g.home_id:g.away_id,
 g.id
-)
-:data.players.filter(p=>
-[g.home_id,g.away_id].includes(p.team_id)&&
-teamCode(p.team)===teamCode(team)&&matches(p)&&eligible(p,g.id)&&
-(sport==="nba"||playerCats(p).length>0)
-).sort((a,b)=>playerOrder(a,b,g.id)).map(playerCard).join("")}`;
+)}`;
 }
 }
 
@@ -1222,6 +1275,23 @@ const url=new URL(location.href);
 url.searchParams.set("sport",action.sport);
 location.assign(url.href);
 }
+return;
+}
+
+if(action.benchPosition!==undefined){
+const key=`${action.benchGame}:${action.benchTeam}`;
+benchTabs[key]=action.benchPosition;
+render(open);
+
+const tab=[...document.querySelectorAll(
+"[data-bench-position]"
+)].find(item=>
+item.dataset.benchGame===action.benchGame&&
+item.dataset.benchTeam===action.benchTeam&&
+item.dataset.benchPosition===action.benchPosition
+);
+
+if(tab)tab.focus({preventScroll:true});
 return;
 }
 
