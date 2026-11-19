@@ -87,6 +87,7 @@ img{width:36px;height:36px;object-fit:cover;border-radius:50%;background:#35435a
 .box-hit{position:absolute;inset:0;width:100%;height:100%;padding:0;border:0;border-radius:0;background:transparent;z-index:2;min-height:0}
 .box-hit:focus-visible{outline:2px solid #fff;outline-offset:2px}
 #box-dialog{background:#1d283b;color:#f4f5fb;border:1px solid #3c4b63;border-radius:12px;width:min(94vw,520px);max-height:85dvh;overflow:auto;padding:12px}
+#box-dialog{overscroll-behavior:contain}
 #box-dialog::backdrop{background:#000b}
 .box-table{width:100%;border-collapse:collapse;margin-top:8px}
 .box-table th,.box-table td{text-align:left;padding:6px;border-bottom:1px solid #ffffff20}
@@ -1401,6 +1402,78 @@ image.hidden=true;
 if(image.nextElementSibling)image.nextElementSibling.hidden=false;
 }
 },true);
+
+// Keep the page still while either stats dialog is open, including on phones.
+const statsDialogs=[q("#player-dialog"),q("#box-dialog")];
+let pageScrollLock=null;
+
+function syncStatsScrollLock(){
+const isOpen=statsDialogs.some(dialog=>dialog.open);
+
+if(isOpen&&!pageScrollLock){
+const body=document.body;
+const root=document.documentElement;
+
+pageScrollLock={
+x:window.scrollX,
+y:window.scrollY,
+bodyStyle:body.getAttribute("style"),
+rootStyle:root.getAttribute("style")
+};
+
+const gutter=window.innerWidth-root.clientWidth;
+const padding=parseFloat(getComputedStyle(body).paddingRight)||0;
+
+root.style.overflow="hidden";
+body.style.position="fixed";
+body.style.top=`-${pageScrollLock.y}px`;
+body.style.left=`-${pageScrollLock.x}px`;
+body.style.width="100%";
+body.style.boxSizing="border-box";
+body.style.overflow="hidden";
+
+if(gutter>0){
+body.style.paddingRight=`${padding+gutter}px`;
+}
+}else if(!isOpen&&pageScrollLock){
+const saved=pageScrollLock;
+pageScrollLock=null;
+
+for(const [element,style] of [
+[document.body,saved.bodyStyle],
+[document.documentElement,saved.rootStyle]
+]){
+if(style===null){
+element.removeAttribute("style");
+}else{
+element.setAttribute("style",style);
+}
+}
+
+const root=document.documentElement;
+root.style.setProperty("scroll-behavior","auto","important");
+window.scrollTo(saved.x,saved.y);
+
+if(saved.rootStyle===null){
+root.removeAttribute("style");
+}else{
+root.setAttribute("style",saved.rootStyle);
+}
+}
+}
+
+const statsDialogObserver=new MutationObserver(syncStatsScrollLock);
+
+for(const dialog of statsDialogs){
+statsDialogObserver.observe(dialog,{
+attributes:true,
+attributeFilter:["open"]
+});
+
+dialog.addEventListener("close",syncStatsScrollLock);
+}
+
+syncStatsScrollLock();
 
 q("#player-dialog").addEventListener("close",()=>{
 activePlayer=null;
