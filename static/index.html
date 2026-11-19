@@ -448,6 +448,20 @@ return 2;
 }
 
 function playerOrder(a,b,gameId=game){
+if(sport==="nfl"){
+const positions={
+QB:0,RB:1,FB:1,WR:2,TE:3,K:4,PK:4
+};
+const positionRank=player=>
+positions[String(player.position||"").trim().toUpperCase()]??99;
+const groupRank=player=>starterRank(player,gameId)<2?0:1;
+
+return groupRank(a)-groupRank(b)||
+positionRank(a)-positionRank(b)||
+starterRank(a,gameId)-starterRank(b,gameId)||
+a.name.localeCompare(b.name);
+}
+
 return starterRank(a,gameId)-starterRank(b,gameId)||
 a.name.localeCompare(b.name);
 }
@@ -484,6 +498,7 @@ player,matchups:data.games.filter(g=>
 [g.home_id,g.away_id].includes(player.team_id)&&eligible(player,g.id))
 })).filter(item=>item.matchups.length);
 const teams=scheduledFavoriteTeams();
+
 q("#favorites").innerHTML=`
 <section class="favorite-panel">
 <h2>Favorites <span class="muted">Today</span></h2>
@@ -916,6 +931,37 @@ ${selected(player.id,side)?"✓ ":""}${side}</button>`).join("")}
 </div></section>`;
 }
 
+function teamPlayers(teamId,gameId){
+const players=data.players.filter(player=>
+player.team_id===teamId&&
+matches(player)&&
+eligible(player,gameId)&&
+(sport==="nba"||playerCats(player).length>0)
+).sort((a,b)=>playerOrder(a,b,gameId));
+
+if(sport==="nba"){
+return players.map(playerCard).join("");
+}
+
+const starters=players.filter(
+player=>starterRank(player,gameId)<2
+);
+
+const bench=players.filter(
+player=>starterRank(player,gameId)>=2
+);
+
+return (
+starters.length
+?`<h3>Starters</h3>${starters.map(playerCard).join("")}`
+:""
+)+(
+bench.length
+?`<h3>Bench</h3>${bench.map(playerCard).join("")}`
+:""
+);
+}
+
 function playerCard(player){
 return `<div class="player-card player-action-area">
 <button type="button" class="player-action-overlay"
@@ -1129,12 +1175,14 @@ ${team==="All"
 ${[[g.away_id,g.away],[g.home_id,g.home]].map(([id,abbreviation])=>
 `<section class="team-column"
 aria-label="${esc(abbreviation)} team stats and players">
-${data.players.filter(p=>
-p.team_id===id&&matches(p)&&eligible(p,g.id)&&
-(sport==="nba"||playerCats(p).length>0)
-).sort((a,b)=>playerOrder(a,b,g.id)).map(playerCard).join("")}
+${teamPlayers(id,g.id)}
 </section>`).join("")}
 </div>`
+:sport==="nfl"
+?teamPlayers(
+teamCode(team)===teamCode(g.home)?g.home_id:g.away_id,
+g.id
+)
 :data.players.filter(p=>
 [g.home_id,g.away_id].includes(p.team_id)&&
 teamCode(p.team)===teamCode(team)&&matches(p)&&eligible(p,g.id)&&
