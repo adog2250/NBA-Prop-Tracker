@@ -161,8 +161,8 @@ input{font-size:16px}
 .box-hit,.player-action-overlay{min-height:0}
 .player-favorite-star{min-height:24px;min-width:28px}
 .player-favorite-star::after{content:"";position:absolute;top:-10px;bottom:-10px;left:-8px;right:-8px}
-button[data-bench-position],button[data-stat],button[data-window],button[data-venue],button[data-team],button[data-minutes],button[data-close-player],button[data-pick],#nav button{position:relative}
-button[data-bench-position]::after,button[data-stat]::after,button[data-window]::after,button[data-venue]::after,button[data-team]::after,button[data-minutes]::after,button[data-close-player]::after,button[data-pick]::after,#nav button::after{content:"";position:absolute;inset:-2px}
+button[data-stat],button[data-window],button[data-venue],button[data-team],button[data-minutes],button[data-close-player],button[data-pick],#nav button{position:relative}
+button[data-stat]::after,button[data-window]::after,button[data-venue]::after,button[data-team]::after,button[data-minutes]::after,button[data-close-player]::after,button[data-pick]::after,#nav button::after{content:"";position:absolute;inset:-2px}
 }
 .team-comparison-panel{margin:6px 0 8px;padding:6px;background:#1d283b;border:1px solid #3c4b63;border-radius:10px}
 .team-comparison{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px}
@@ -267,7 +267,6 @@ let data={players:[],games:[],team_stats:{}};
 let game="all",team="All",stat=sport==="nfl"?"PASS_YDS":"PTS",n=5,venue="All";
 let minutes=false,search="",myPicks=false;
 let activePlayer=null;
-const benchTabs={};
 let picks=[],favorites=[],favoriteTeams=[];
 
 const storageKey=sport==="nfl"?"zenstats-nfl-picks-v1":"nba-prop-tracker-picks-v1";
@@ -998,25 +997,12 @@ const bRank=order.includes(b)?order.indexOf(b):order.length;
 return aRank-bRank||a.localeCompare(b);
 });
 
-const key=`${gameId}:${teamId}`;
-
-const selected=groups.has(benchTabs[key])
-?benchTabs[key]:positions[0];
-
-benchTabs[key]=selected;
-
 html+=`<h3>Bench</h3>
-<div class="row" role="group" aria-label="Bench positions">
 ${positions.map(position=>`
-<button type="button"
-data-bench-position="${esc(position)}"
-data-bench-team="${esc(teamId)}"
-data-bench-game="${esc(gameId)}"
-aria-pressed="${position===selected}">
-${esc(position)}
-</button>`).join("")}
-</div>
-${groups.get(selected).map(playerCard).join("")}`;
+<section aria-label="${esc(position)} bench players">
+<h3>${esc(position)}</h3>
+${groups.get(position).map(playerCard).join("")}
+</section>`).join("")}`;
 
 return html;
 }
@@ -1275,23 +1261,6 @@ const url=new URL(location.href);
 url.searchParams.set("sport",action.sport);
 location.assign(url.href);
 }
-return;
-}
-
-if(action.benchPosition!==undefined){
-const key=`${action.benchGame}:${action.benchTeam}`;
-benchTabs[key]=action.benchPosition;
-render(open);
-
-const tab=[...document.querySelectorAll(
-"[data-bench-position]"
-)].find(item=>
-item.dataset.benchGame===action.benchGame&&
-item.dataset.benchTeam===action.benchTeam&&
-item.dataset.benchPosition===action.benchPosition
-);
-
-if(tab)tab.focus({preventScroll:true});
 return;
 }
 
