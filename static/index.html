@@ -529,18 +529,94 @@ teams saved. Listed when their team is scheduled.</p>
 </section>`;
 }
 
-function trend(player,key=stat){
-const a=avg(player,key);
-const games=player.logs.filter(g=>val(g,key)!==null).slice(0,n);
-if(a===null)return '<span class="muted">No saved history</span>';
-const above=games.filter(g=>val(g,key)>a+1e-9).length;
-const below=games.filter(g=>val(g,key)<a-1e-9).length;
-if(above===below){
-return `<span class="muted">Above / Below tied · ${above}/${games.length} each</span>`;
+function trendEvidence(player,key){
+const logs=[...new Map(
+player.logs.map(log=>[String(log.id),log])
+).values()].sort((a,b)=>
+String(b.date).localeCompare(String(a.date))||
+String(b.id).localeCompare(String(a.id)));
+
+const recent=logs.slice(0,n);
+
+if(
+recent.length<n||
+recent.some(log=>val(log,key)===null)
+)return null;
+
+const history=logs.map(log=>val(log,key))
+.filter(value=>value!==null);
+
+if(history.length<n)return null;
+
+const average=history.reduce(
+(sum,value)=>sum+value,0
+)/history.length;
+
+const above=recent.filter(
+log=>val(log,key)>average+1e-9
+).length;
+
+const below=recent.filter(
+log=>val(log,key)<average-1e-9
+).length;
+
+if(above===below)return null;
+
+return {
+key,
+average,
+above,
+below,
+hits:Math.max(above,below),
+count:n,
+side:above>below?"Above":"Below",
+seasonGames:history.length
+};
 }
-return `<span class="${above>below?"green":"red"}">
-${above>below?"Above":"Below"} ${Math.max(above,below)}/${games.length}
-</span>`;
+
+function bestTrend(player){
+let best=null;
+
+for(const key of playerCats(player)){
+const evidence=trendEvidence(player,key);
+
+if(
+evidence&&(
+!best||
+evidence.hits>best.hits||
+(
+evidence.hits===best.hits&&
+evidence.seasonGames>best.seasonGames
+)
+)
+){
+best=evidence;
+}
+}
+
+return best;
+}
+
+function rankedStarters(teamId,gameId){
+return data.players.filter(player=>
+player.team_id===teamId&&
+matches(player)&&
+eligible(player,gameId)&&
+starterRank(player,gameId)<2&&
+(
+sport==="nba"||
+["QB","RB","WR","TE","K","PK"].includes(player.position)
+)
+).map(player=>({
+player,
+evidence:bestTrend(player)
+})).filter(item=>item.evidence!==null)
+.sort((a,b)=>
+b.evidence.hits-a.evidence.hits||
+starterRank(a.player,gameId)-starterRank(b.player,gameId)||
+b.evidence.seasonGames-a.evidence.seasonGames||
+a.player.name.localeCompare(b.player.name)
+).slice(0,2);
 }
 
 function playerCats(player){
@@ -993,34 +1069,48 @@ ${identity(p)}
 }else if(game==="all"){
 html=`<div class="row" style="justify-content:space-between">
 <h2>Above & Below Season Average</h2>
-<span class="muted">Last ${n} · ${esc(label(stat))}</span></div>`;
+<span class="muted">Last ${n}</span></div>`;
+
+let cardCount=0;
 
 for(const g of data.games){
-const shown=[g.away_id,g.home_id].flatMap(id=>
-data.players.filter(p=>
-p.team_id===id&&matches(p)&&avg(p,primaryStat(p))!==null&&
-(sport==="nba"||["QB","RB","FB","WR","TE","K","PK"].includes(p.position))&&
-eligible(p,g.id)&&starterRank(p,g.id)<2
-).sort((a,b)=>playerOrder(a,b,g.id)).slice(0,2));
+const shown=[g.away_id,g.home_id]
+.flatMap(id=>rankedStarters(id,g.id));
 
 if(shown.length){
+cardCount+=shown.length;
+
 html+=`<section class="group">
 <h3>${esc(g.away)} @ ${esc(g.home)}</h3>
-<div class="grid">${shown.map(p=>`<div class="tile player-action-area">
+<div class="grid">
+${shown.map(({player:p,evidence:e})=>`
+<div class="tile player-action-area">
 <button type="button" class="player-action-overlay"
-data-open="${p.id}" data-match="${esc(g.id)}"
-aria-haspopup="dialog" aria-label="Open ${esc(p.name)} stats"></button>
+data-open="${p.id}"
+data-match="${esc(g.id)}"
+data-card-stat="${e.key}"
+aria-haspopup="dialog"
+aria-label="Open ${esc(p.name)} ${esc(label(e.key))} stats"></button>
 ${identity(p,true)}${lineupLabel(p,g.id)}
 <p class="muted">
-Season ${esc(label(primaryStat(p)))} avg · ${fmt(avg(p,primaryStat(p)))}
+Season ${esc(label(e.key))} avg · ${fmt(e.average)}
 </p>
-<strong>${trend(p,primaryStat(p))}</strong>
-</div>`).join("")}</div></section>`;
+<strong>
+<span class="${e.side==="Above"?"green":"red"}">
+${e.side} ${e.hits}/${e.count}
+</span>
+</strong>
+</div>`).join("")}
+</div></section>`;
 }
 }
 
 if(!data.games.length&&!search.trim()){
-html+=`<p class="muted">No games are saved for today.</p>`;
+html+='<p class="muted">No games are saved for today.</p>';
+}else if(cardCount===0){
+html+=`<p class="muted">
+No matching eligible starters have a qualifying trend across their last ${n} saved games.
+</p>`;
 }
 
 }else{
@@ -1173,6 +1263,9 @@ render();
 }else if(action.open){
 game=action.match;
 team="All";
+venue="All";
+minutes=false;
+if(action.cardStat)stat=action.cardStat;
 render(action.open);
 }else if(action.team){
 team=action.team;
