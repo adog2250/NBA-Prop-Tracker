@@ -592,6 +592,7 @@ function bestTrend(player){
 let best=null;
 
 for(const key of playerCats(player)){
+if(sport==="nba"&&["STL","BLK"].includes(key))continue;
 const evidence=trendEvidence(player,key);
 
 if(
