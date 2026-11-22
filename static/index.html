@@ -2,6 +2,7 @@
 
 
 
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -708,12 +709,15 @@ return '<p class="muted">No saved games for this selection.</p>';
 
 const average=avg(player,stat);
 const values=games.map(log=>val(log,stat));
-const completions=stat==="PASS_CMP";
-const attempts=completions
-?games.map(log=>log.PASS_ATT).filter(Number.isFinite):[];
+const overlay={
+PASS_CMP:{key:"PASS_ATT",label:"attempts"},
+REC:{key:"TGTS",label:"targets"}
+}[stat];
+const backgroundValues=overlay
+?games.map(log=>val(log,overlay.key)).filter(value=>value!==null):[];
 
 const low=Math.min(0,...values,average??0);
-const high=Math.max(1,...values,...attempts,average??0);
+const high=Math.max(1,...values,...backgroundValues,average??0);
 const span=high-low;
 const bottom=low<0?low-span*.12:0;
 const top=high+span*.2;
@@ -726,25 +730,25 @@ aria-label="${esc(label(stat))}; select a bar for its box score.">
 <div class="nfl-zero" style="bottom:${position(0)}%"></div>
 ${games.map(log=>{
 const value=val(log,stat);
-const attempt=Number.isFinite(log.PASS_ATT)?log.PASS_ATT:null;
+const backgroundValue=overlay?val(log,overlay.key):null;
 const color=value>average+1e-9?"#97ff42"
 :value<average-1e-9?"#ff667e":"#efd16a";
 
-const background=completions&&attempt!==null
+const background=backgroundValue!==null
 ?`<div style="position:absolute;
 bottom:${position(0)}%;width:100%;
-height:${100*attempt/range}%;background:#596982">
-<span class="number" style="color:#bbc8dd">${attempt}</span>
+height:${100*backgroundValue/range}%;background:#596982">
+${backgroundValue===value?"":`<span class="number" style="color:#bbc8dd">${backgroundValue}</span>`}
 </div>`:"";
 
 return `<div class="column">
 <button class="box-hit" data-box="${player.id}:${esc(log.id)}"
-aria-label="${esc(player.name)}, ${esc(log.date)}, ${esc(log.opp)}, ${value} ${esc(label(stat))}${completions&&attempt!==null?`, ${attempt} attempts`:""}"></button>
+aria-label="${esc(player.name)}, ${esc(log.date)}, ${esc(log.opp)}, ${value} ${esc(label(stat))}${backgroundValue!==null?`, ${backgroundValue} ${overlay.label}`:""}"></button>
 ${background}
 <div class="bar" style="position:absolute;
 bottom:${position(Math.min(0,value))}%;
 height:${100*Math.abs(value)/range}%;
-${completions?"left:19%;width:62%;":""}
+${backgroundValue!==null?"left:19%;width:62%;":""}
 background:${color}">
 <span class="number">${value}</span></div>
 <span class="opponent">
@@ -759,7 +763,7 @@ style="bottom:${position(average)}%">
 <span>AVG ${fmt(average)}</span></div>`:""}
 </div></div>
 <p class="muted">
-${completions?"Muted background: attempts · Colored bar: completions<br>":""}
+${overlay?`Gray bar: ${overlay.label} · Colored bar: ${stat==="REC"?"receptions":"completions"}<br>`:""}
 Green: above · Red: below · Yellow: equal · White: season average
 </p>`;
 }
@@ -896,7 +900,7 @@ ${lineupLabel(player,playerMatchup??game)}
 <span class="muted">${playerSummary(player)}</span>
 </div>
 <div class="row player-stat-tabs" style="margin-top:12px">
-${playerCats(player).map(k=>`<button data-stat="${k}"
+${playerCats(player).filter(k=>k!=="TGTS").map(k=>`<button data-stat="${k}"
 aria-pressed="${stat===k}">${esc(label(k))}</button>`).join("")}
 </div>
 ${sport==="nba"?`<div class="player-graph-mode"
