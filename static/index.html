@@ -1,6 +1,7 @@
 
 
 
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -1148,6 +1149,11 @@ ${esc(data.season)} · Saved final games only.
 </section>`;
 }
 
+function isFinalGame(matchup){
+const status=String(matchup.status??"").trim().toLowerCase();
+return status==="final"||status==="status_final";
+}
+
 function render(open){
 document.querySelectorAll("[data-sport]").forEach(button=>
 button.setAttribute("aria-pressed",String(button.dataset.sport===sport)));
@@ -1179,7 +1185,7 @@ html=`<div class="row" style="justify-content:space-between">
 <span class="muted">Last ${n}</span></div>`;
 
 let cardCount=0;
-const unfinishedGames=data.games.filter(g=>g.status!=="final");
+const unfinishedGames=data.games.filter(g=>!isFinalGame(g));
 
 for(const g of unfinishedGames){
 const shown=[g.away_id,g.home_id]
@@ -1502,7 +1508,7 @@ search=event.target.value;
 render();
 });
 
-async function load(){
+async function load(refresh=false){
 try{
 const response=await fetch(
 sport==="nfl"?"/api/nfl/dashboard":"/api/dashboard",
@@ -1510,6 +1516,12 @@ sport==="nfl"?"/api/nfl/dashboard":"/api/dashboard",
 );
 const result=await response.json();
 if(!response.ok)throw Error(result.error);
+if(refresh){
+if(document.hidden||game!=="all"||myPicks||statsDialogs.some(dialog=>dialog.open))return;
+const previousGames=data.games.map(g=>[g.id,isFinalGame(g)]);
+const currentGames=result.games.map(g=>[g.id,isFinalGame(g)]);
+if(JSON.stringify(previousGames)===JSON.stringify(currentGames))return;
+}
 data=result;
 
 q("#games-title").textContent=sport==="nfl"
@@ -1529,6 +1541,7 @@ q("#status").textContent=
 
 render();
 }catch(error){
+if(refresh)return;
 q("#status").textContent=navigator.onLine
 ?`Saved ${sport.toUpperCase()} data could not load. Reload to try again.`
 :`Offline · Reconnect to load current ${sport.toUpperCase()} stats.`;
@@ -1538,7 +1551,15 @@ render();
 
 q("#status").textContent=`Loading saved ${sport.toUpperCase()} data…`;
 render();
-load();
+
+async function refreshAllGames(){
+if(!document.hidden&&game==="all"&&!myPicks&&!statsDialogs.some(dialog=>dialog.open)){
+await load(true);
+}
+window.setTimeout(refreshAllGames,60000);
+}
+
+load().finally(()=>window.setTimeout(refreshAllGames,60000));
 
 if("serviceWorker" in navigator){
 navigator.serviceWorker.register("/service-worker.js").catch(()=>{});
@@ -1547,6 +1568,7 @@ navigator.serviceWorker.register("/service-worker.js").catch(()=>{});
 </script>
 </body>
 </html>
+Draggable item chatgpt:conversation:6b035375-4f08-83ea-aab3-8ae321825e67 was dropped over droppable area chatgpt:conversation:6af25c92-4758-83ea-af72-4695b27e4ac9
 
 
 
