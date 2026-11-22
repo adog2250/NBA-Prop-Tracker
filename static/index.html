@@ -1,7 +1,6 @@
 
 
 
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -1180,8 +1179,9 @@ html=`<div class="row" style="justify-content:space-between">
 <span class="muted">Last ${n}</span></div>`;
 
 let cardCount=0;
+const unfinishedGames=data.games.filter(g=>g.status!=="final");
 
-for(const g of data.games){
+for(const g of unfinishedGames){
 const shown=[g.away_id,g.home_id]
 .flatMap(id=>rankedStarters(id,g.id));
 
@@ -1215,6 +1215,8 @@ ${e.side} ${e.hits}/${e.count}
 
 if(!data.games.length&&!search.trim()){
 html+='<p class="muted">No games are saved for today.</p>';
+}else if(data.games.length&&!unfinishedGames.length){
+html+='<p class="muted">All scheduled games are final.</p>';
 }else if(cardCount===0){
 html+=`<p class="muted">
 No matching eligible starters have a qualifying trend across their last ${n} saved games.
