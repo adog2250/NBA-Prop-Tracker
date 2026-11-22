@@ -273,6 +273,7 @@ let data={players:[],games:[],team_stats:{}};
 let game="all",team="All",stat=sport==="nfl"?"PASS_YDS":"PTS",n=5,venue="All";
 let minutes=false,search="",myPicks=false;
 let activePlayer=null;
+let playerMatchup=null;
 let picks=[],favorites=[],favoriteTeams=[];
 
 const storageKey=sport==="nfl"?"zenstats-nfl-picks-v1":"nba-prop-tracker-picks-v1";
@@ -370,7 +371,7 @@ encodeURIComponent(slug)+".png";
 }
 
 function opponentFor(player){
-const matchup=data.games.find(g=>String(g.id)===game);
+const matchup=data.games.find(g=>String(g.id)===(playerMatchup??game));
 if(!matchup)return null;
 if(player.team_id===matchup.home_id)return matchup.away;
 if(player.team_id===matchup.away_id)return matchup.home;
@@ -891,7 +892,7 @@ const recent=games.length
 return `<section data-player="${player.id}">
 <div>
 <span class="player-heading">${identity(player,true)}</span>
-${lineupLabel(player)}
+${lineupLabel(player,playerMatchup??game)}
 <span class="muted">${playerSummary(player)}</span>
 </div>
 <div class="row player-stat-tabs" style="margin-top:12px">
@@ -1364,8 +1365,7 @@ venue="All";
 myPicks=false;
 render();
 }else if(action.open){
-game=action.match;
-team="All";
+playerMatchup=action.match;
 venue="All";
 minutes=false;
 if(action.cardStat)stat=action.cardStat;
@@ -1491,6 +1491,7 @@ syncStatsScrollLock();
 
 q("#player-dialog").addEventListener("close",()=>{
 activePlayer=null;
+playerMatchup=null;
 q("#player-dialog-content").innerHTML="";
 });
 
