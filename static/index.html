@@ -1,3 +1,7 @@
+
+
+
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -593,6 +597,7 @@ let best=null;
 
 for(const key of playerCats(player)){
 if(sport==="nba"&&["STL","BLK"].includes(key))continue;
+if(sport==="nfl"&&!["PASS_YDS","REC","REC_YDS","RUSH_YDS"].includes(key))continue;
 const evidence=trendEvidence(player,key);
 
 if(
@@ -1531,3 +1536,7 @@ navigator.serviceWorker.register("/service-worker.js").catch(()=>{});
 </script>
 </body>
 </html>
+
+
+
+
