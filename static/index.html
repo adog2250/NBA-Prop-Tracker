@@ -2,7 +2,6 @@
 
 
 
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -1277,6 +1276,10 @@ q("#favorites").innerHTML=q("#favorites").innerHTML
 if(open!==undefined)activePlayer=toId(open);
 renderPlayerPopup();
 }
+
+q("main").addEventListener("dragstart",event=>{
+if(event.target.closest("a, img"))event.preventDefault();
+});
 
 q("main").addEventListener("click",event=>{
 const button=event.target.closest("button");
