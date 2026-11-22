@@ -973,6 +973,14 @@ const starters=players.filter(
 player=>starterRank(player,gameId)<2
 );
 
+if(sport==="nba"){
+const starterPositions=["PG","SG","SF","PF","C","G","F","Other"];
+starters.sort((a,b)=>
+starterPositions.indexOf(benchPosition(a))-
+starterPositions.indexOf(benchPosition(b))
+);
+}
+
 const bench=players.filter(
 player=>starterRank(player,gameId)>=2
 );
